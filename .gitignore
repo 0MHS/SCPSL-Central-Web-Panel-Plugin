@@ -1,0 +1,9 @@
+# Build outputs & artifacts
+bin/
+obj/
+*.user
+*.pdb
+*.suo
+.vs/
+.idea/
+*.log
