@@ -1113,8 +1113,13 @@ namespace ScpWebPanelPlugin
                 {
                     if (player == null) continue;
 
-                    string id = EscapeJson(player.UserId ?? "");
-                    string name = EscapeJson(player.Nickname ?? "");
+                    string rawId = player.UserId ?? "";
+                    string rawName = player.Nickname ?? "";
+                    if (string.IsNullOrWhiteSpace(rawId) || rawId == "Unknown" || string.IsNullOrWhiteSpace(rawName) || rawName == "(null)" || rawName == "null") continue;
+                    if (rawName.ToLower().Contains("dedicated") || rawId.ToLower().StartsWith("dedicated")) continue;
+
+                    string id = EscapeJson(rawId);
+                    string name = EscapeJson(rawName);
                     string role = EscapeJson(player.Role.ToString() ?? "");
                     float hp = player.Health;
                     bool isMuted = player.IsMuted;

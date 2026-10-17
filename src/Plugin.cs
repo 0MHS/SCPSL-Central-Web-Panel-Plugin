@@ -254,10 +254,12 @@ namespace ScpWebPanelPlugin
                 if (ev?.Player == null) return;
                 if (WsClient == null || !WsClient.IsConnected) return;
 
-                string pName = ev.Player.Nickname ?? "Unknown";
-                string pId = ev.Player.UserId ?? "Unknown";
+                string pName = ev.Player.Nickname ?? "";
+                string pId = ev.Player.UserId ?? "";
                 string pRole = ev.Player.Role.ToString();
 
+                // Discard invalid, dummy, null, or dedicated server instances
+                if (string.IsNullOrWhiteSpace(pId) || pId == "Unknown" || string.IsNullOrWhiteSpace(pName) || pName == "(null)" || pName == "null") return;
                 if (pName.ToLower().Contains("dedicated") || pId.ToLower().StartsWith("dedicated")) return;
 
                 string json = "{" +
