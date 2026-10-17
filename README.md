@@ -1,6 +1,6 @@
 # SCP:SL Web Panel — LabAPI Game Server Plugin (v2.1.1)
 
-[![Release](https://img.shields.io/badge/Release-v2.1.1-brightgreen.svg)](https://github.com/mhsbaba/SCPSL-Central-Web-Panel-Plugin/releases)
+[![Release](https://img.shields.io/badge/Release-v2.1.1-brightgreen.svg)](https://github.com/0MHS/SCPSL-Central-Web-Panel-Plugin/releases)
 [![Target](https://img.shields.io/badge/.NET%20Framework-4.8-blue.svg)](https://dotnet.microsoft.com/)
 [![Modding](https://img.shields.io/badge/Framework-LabAPI-orange.svg)](https://github.com/CedModV2/LabAPI)
 [![Status](https://img.shields.io/badge/Live%20Panel-Online-success.svg)](https://scpslwebpanel.zapto.org)
@@ -12,7 +12,7 @@ This plugin establishes an outbound secure TLS Reverse WebSocket tunnel from you
 
 ---
 
-## 🚀 Key Features
+## Key Features
 - **Zero Inbound Port Forwarding**: The plugin initiates an outbound secure TLS WebSocket connection (`ClientWebSocket`) to `wss://scpslwebpanel.zapto.org/ws/plugin`. You never need to open inbound ports or expose game ports to the public internet.
 - **Zero-Secret Public Binary**: Compiled with release hardening, deterministic metadata, and stripped debug symbols.
 - **High Performance & Main-Thread Safety**: All game interactions (`p.Kick()`, `p.Ban()`, `VoiceChatMutes`, `ServerConsole`) are dispatched asynchronously to Unity's main thread via captured synchronization contexts.
@@ -23,7 +23,7 @@ This plugin establishes an outbound secure TLS Reverse WebSocket tunnel from you
 
 ---
 
-## 📦 Installation & Setup Guide
+## Installation & Setup Guide
 
 ### Prerequisites
 - An **SCP: Secret Laboratory Dedicated Server** (Windows or Linux).
@@ -72,13 +72,13 @@ In your browser on [https://scpslwebpanel.zapto.org](https://scpslwebpanel.zapto
 
 ---
 
-## 🔒 Security & Privacy
+## Security & Privacy
 - **Encrypted Transmission**: All communication between your game server and the central panel is encrypted via TLS 1.3 / WSS.
 - **Tenancy Isolation**: Each game server is strictly bound to its owner's Discord account and delegated staff.
 - **Binary Integrity**: Built with strict argument sanitization protecting `UserIdBans.txt` and preventing remote command injection.
 
 ---
 
-## 🛠 Support & Inquiries
+## Support & Inquiries
 - **Central Web Panel**: [https://scpslwebpanel.zapto.org](https://scpslwebpanel.zapto.org)
 - For issues, feature requests, or bug reports, please open an issue on this repository.
