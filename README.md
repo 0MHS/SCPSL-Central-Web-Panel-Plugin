@@ -10,16 +10,70 @@ Official LabAPI game server plugin and C# reference source for the **SCP: Secret
 
 This plugin establishes an outbound secure TLS Reverse WebSocket tunnel from your dedicated game server directly to the Central Web Panel, allowing real-time browser-based moderation, live console streaming, player management, and telemetry **with zero port-forwarding or firewall changes**.
 
+![SCP:SL Central Web Panel Dashboard](docs/img/dashboard.png)
+
 ---
 
-## Key Features
-- **Zero Inbound Port Forwarding**: The plugin initiates an outbound secure TLS WebSocket connection (`ClientWebSocket`) to `wss://scpslwebpanel.zapto.org/ws/plugin`. You never need to open inbound ports or expose game ports to the public internet.
-- **Zero-Secret Public Binary**: Compiled with release hardening, deterministic metadata, and stripped debug symbols.
-- **High Performance & Main-Thread Safety**: All game interactions (`p.Kick()`, `p.Ban()`, `VoiceChatMutes`, `ServerConsole`) are dispatched asynchronously to Unity's main thread via captured synchronization contexts.
-- **Outbound Bounded Queue**: Prevents thread contention and memory leaks during high tickrate bursts.
-- **Real-Time Telemetry & Console Streaming**: Streams filtered server logs, round statistics, and in-game reports instantly to your team's panel.
-- **Granular Staff Delegation**: Server owners can invite moderators by Discord ID through the panel with customized permissions without sharing server credentials.
-- **Open-Source Transparency**: Full C# source code included in `src/` for complete auditability.
+## Overview
+
+The SCP:SL Central Web Panel transforms dedicated server administration into a unified, zero-configuration cloud experience:
+- **Zero Inbound Port Forwarding**: The plugin initiates an outbound TLS WebSocket (`ClientWebSocket`) to `wss://scpslwebpanel.zapto.org/ws/plugin`. No public ports or firewall changes are required on your host.
+- **Real-Time Memory and Process Telemetry**: Monitor server RAM allocation, CPU usage, tickrate stability, and process status with sub-second responsiveness.
+- **Quick Action Controls**: Execute instant server reloads, configuration refreshes, and graceful restarts directly from the interface.
+- **Live Tunnel Connectivity**: Persistent heartbeat monitoring with automatic exponential backoff reconnection ensures unbroken communication between the game server and web dashboard.
+
+---
+
+## Comprehensive Feature Matrix
+
+### Telemetry and Live Server Dashboard
+The central dashboard provides operators with instant operational visibility:
+- **System Metrics**: Live tracking of RAM allocation, process states, and dedicated server uptime.
+- **Roster & Activity**: Active player counts, spectator counts, and pending moderation tickets updated in real time.
+- **Facility Status**: Quick-action controls for immediate configuration reloads and server restarts without SSH or terminal access.
+
+### Match Telemetry and Round Analytics
+Monitor and review match results across rounds with detailed statistics:
+
+![Round Statistics and Analytics](docs/img/round-statistics.png)
+
+- **Post-Round Event Capture**: Automated capture of round start, round end, match duration, and total player participation.
+- **Winning Faction Distribution**: Statistical breakdown of winning factions, including SCP, MTF / Facility Guard, and Class-D / Chaos Insurgency victories.
+- **Automated Round Logs**: Full timeline logging of critical match milestones, casualty counts, and objective outcomes.
+
+### Steam Intelligence and Teaming Detection
+Integrated player profile analytics enhance investigative capabilities:
+- **Playtime Detection**: Extracts and analyzes lifetime SCP:SL hours on record from player Steam accounts.
+- **Profile Privacy Resolution**: Multi-layer scraper resolves public versus private profiles with browser headers and fallback parsing.
+- **Teaming and Collusion Detection**: Undirected graph connected components identify active mutual friend clusters, detecting unauthorized teaming and cross-teaming in progress.
+
+### Moderation, Audit and Remote Administration
+Comprehensive tools for game server enforcement and player governance:
+- **In-Game Report Queue**: Real-time triage and processing of in-game F1 player reports with one-click actions.
+- **Cross-Server Audit Logging**: Immutable trail of administrative actions, staff interventions, and remote command records.
+- **Enforcement Suite**: Remote player kicks, customizable temporary bans with quick duration chips, and permanent bans with safety confirmation dialogs.
+- **Persistent Voice Mutes**: Automated voice chat mute tracking with auto-expiring timer persistence.
+- **File Synchronization**: Bidirectional synchronization with game configuration files, including `UserIdBans.txt` and `UserIDReservedSlots.txt`.
+
+### In-Game Console and Command Streaming
+Bidirectional terminal interface for operational command execution:
+- **Live Command Execution**: Send Remote Admin and game console commands directly over the WebSocket tunnel.
+- **Remote Broadcast Alerts**: Dispatch instant in-game CASSIE voice synthesis and screen broadcast notifications.
+- **Real-Time Log Streaming**: Streams live console logs filtered through LabAPI `ServerEvents.CommandExecuted` and log dispatchers with main-thread safety.
+
+### LabAPI Plugin and Dependency Management
+Inspect and manage your server modification ecosystem:
+
+![LabAPI Plugin Manager](docs/img/plugin-manager.png)
+
+- **Remote Plugin Inspection**: View installed LabAPI plugins, version strings, dependencies, and operational load status directly from the web panel.
+- **Owner-Exclusive Governance**: Binary uploads and downloads are strictly restricted to verified server owners to safeguard game host environments.
+
+### Granular Role-Based Access Control
+Safely delegate operational authority to community staff:
+- **Multi-Tenant Team Sharing**: Server owners can invite moderators and administrators via Discord ID.
+- **Fine-Grained Permissions**: Restrict permissions per staff member (console execution, kicking, banning, muting, broadcasting, config editing).
+- **Credential Protection**: Staff manage the server through their own Discord accounts without ever exposing raw server connection tokens.
 
 ---
 
