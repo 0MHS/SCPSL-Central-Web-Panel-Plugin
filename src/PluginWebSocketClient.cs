@@ -422,6 +422,57 @@ namespace ScpWebPanelPlugin
                         break;
                     }
 
+                    case "broadcast":
+                    {
+                        string message = ExtractField(rawMessage, "message");
+                        string targetId = SanitizeTargetId(ExtractField(rawMessage, "targetId"));
+                        string durationStr = ExtractField(rawMessage, "duration");
+                        ushort duration = 10;
+                        if (ushort.TryParse(durationStr, out ushort d) && d > 0) duration = d;
+
+                        if (string.IsNullOrWhiteSpace(message))
+                        {
+                            await SendResponseAsync(reqId, false, "\"Broadcast message is required\"");
+                            return;
+                        }
+
+                        bool ok = await RunOnMainThreadAsync(() =>
+                        {
+                            try
+                            {
+                                if (!string.IsNullOrEmpty(targetId))
+                                {
+                                    // Player-specific broadcast (pbc)
+                                    foreach (var p in Player.List)
+                                    {
+                                        if (p != null && (p.UserId == targetId || p.UserId.StartsWith(targetId) || p.PlayerId.ToString() == targetId))
+                                        {
+                                            p.SendBroadcast(message, duration, Broadcast.BroadcastFlags.Normal, true);
+                                            Logger.Info($"[PluginWS] Broadcast sent to {p.Nickname} ({p.UserId}): \"{message}\" ({duration}s)");
+                                            return true;
+                                        }
+                                    }
+                                    return false;
+                                }
+                                else
+                                {
+                                    // Global broadcast (bc)
+                                    LabApi.Features.Wrappers.Server.SendBroadcast(message, duration, Broadcast.BroadcastFlags.Normal, true);
+                                    Logger.Info($"[PluginWS] Global broadcast dispatched: \"{message}\" ({duration}s)");
+                                    return true;
+                                }
+                            }
+                            catch (Exception ex)
+                            {
+                                Logger.Error($"[PluginWS] Failed to send broadcast: {ex.Message}");
+                                return false;
+                            }
+                        });
+
+                        await SendResponseAsync(reqId, ok, ok ? "{\"success\":true}" : "{\"error\":\"Target player not found online or broadcast failed\"}", isRawJson: true);
+                        break;
+                    }
+
                     case "command":
                     {
                         string cmd = ExtractField(rawMessage, "command");
@@ -435,8 +486,87 @@ namespace ScpWebPanelPlugin
                         {
                             try
                             {
-                                ServerConsole.EnterCommand(cmd);
-                                return $"[Server] Executed: {cmd}";
+                                string trimmed = cmd.Trim();
+                                string lower = trimmed.ToLowerInvariant();
+
+                                // Intercept server restart aliases to ensure full process reboot rather than match round restart
+                                if (lower == "restart" || lower == "server_restart" || lower == "serverrestart")
+                                {
+                                    ServerConsole.EnterCommand("srestart");
+                                    return "[Server] Soft restart command sent ('srestart'). Server process is restarting...";
+                                }
+
+                                // 1. Direct handling for broadcast commands (bc / pbc)
+                                if (lower.StartsWith("bc ") || lower == "bc")
+                                {
+                                    string[] parts = trimmed.Split(new[] { ' ' }, 3, StringSplitOptions.RemoveEmptyEntries);
+                                    if (parts.Length >= 2)
+                                    {
+                                        ushort duration = 10;
+                                        string msg;
+                                        if (ushort.TryParse(parts[1], out ushort parsedDur) && parts.Length >= 3)
+                                        {
+                                            duration = parsedDur;
+                                            msg = parts[2];
+                                        }
+                                        else
+                                        {
+                                            msg = trimmed.Substring(3).Trim();
+                                        }
+
+                                        LabApi.Features.Wrappers.Server.SendBroadcast(msg, duration, Broadcast.BroadcastFlags.Normal, true);
+                                        return $"Broadcast sent to all players ({duration}s): {msg}";
+                                    }
+                                }
+                                else if (lower.StartsWith("pbc ") || lower == "pbc")
+                                {
+                                    string[] parts = trimmed.Split(new[] { ' ' }, 4, StringSplitOptions.RemoveEmptyEntries);
+                                    if (parts.Length >= 3)
+                                    {
+                                        string target = parts[1];
+                                        ushort duration = 10;
+                                        string msg;
+                                        if (ushort.TryParse(parts[2], out ushort parsedDur) && parts.Length >= 4)
+                                        {
+                                            duration = parsedDur;
+                                            msg = parts[3];
+                                        }
+                                        else
+                                        {
+                                            msg = trimmed.Substring(parts[0].Length + parts[1].Length + 2).Trim();
+                                        }
+
+                                        foreach (var p in Player.List)
+                                        {
+                                            if (p != null && (p.UserId == target || p.UserId.StartsWith(target) || p.PlayerId.ToString() == target))
+                                            {
+                                                p.SendBroadcast(msg, duration, Broadcast.BroadcastFlags.Normal, true);
+                                                return $"Player broadcast sent to {p.Nickname} ({duration}s): {msg}";
+                                            }
+                                        }
+                                        return $"Player '{target}' not found online.";
+                                    }
+                                }
+
+                                // 2. Attempt execution via LabApi Server.RunCommand
+                                string labResult = null;
+                                try
+                                {
+                                    labResult = LabApi.Features.Wrappers.Server.RunCommand(trimmed, ServerConsole.Scs);
+                                }
+                                catch { }
+
+                                if (!string.IsNullOrWhiteSpace(labResult) && 
+                                    !labResult.Contains("isn't available") && 
+                                    !labResult.Contains("Command not found") &&
+                                    !labResult.Contains("Command does not exist"))
+                                {
+                                    return labResult.Trim();
+                                }
+
+                                // 3. Fallback: execute via ServerConsole (Game Console commands like roundrestart, etc.)
+                                ServerConsole.EnterCommand(trimmed);
+                                return string.IsNullOrWhiteSpace(labResult) ? $"[Server] Executed: {trimmed}" : labResult.Trim();
                             }
                             catch (Exception ex)
                             {
@@ -540,23 +670,283 @@ namespace ScpWebPanelPlugin
                                 targetDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "SCP Secret Laboratory", "PluginAPI", "plugins");
                             }
 
+                            // If global directory exists inside plugins/dependencies, prioritize global
+                            string globalSubDir = Path.Combine(targetDir, "global");
+                            if (Directory.Exists(globalSubDir))
+                            {
+                                targetDir = globalSubDir;
+                            }
+
                             if (!Directory.Exists(targetDir)) Directory.CreateDirectory(targetDir);
                             string destPath = Path.Combine(targetDir, safeFileName);
-                            File.WriteAllBytes(destPath, fileBytes);
+                            
+                            // Safe atomic file replacement: write to temp file then move/replace
+                            string tmpPath = destPath + ".tmp";
+                            File.WriteAllBytes(tmpPath, fileBytes);
+                            try
+                            {
+                                if (File.Exists(destPath))
+                                {
+                                    string bakPath = destPath + ".bak";
+                                    try { if (File.Exists(bakPath)) File.Delete(bakPath); } catch { }
+                                    try { File.Move(destPath, bakPath); } catch { File.Delete(destPath); }
+                                }
+                                File.Move(tmpPath, destPath);
+                            }
+                            catch
+                            {
+                                // Fallback to direct write if move failed
+                                File.WriteAllBytes(destPath, fileBytes);
+                                try { if (File.Exists(tmpPath)) File.Delete(tmpPath); } catch { }
+                            }
                             Logger.Info($"[PluginWS] Wrote uploaded plugin to {destPath} ({fileBytes.Length} bytes)");
+
+                            // Also sync to global directory if targetDir wasn't global already
+                            try
+                            {
+                                if (!targetDir.EndsWith("global", StringComparison.OrdinalIgnoreCase) && Directory.Exists(globalSubDir))
+                                {
+                                    string globalDest = Path.Combine(globalSubDir, safeFileName);
+                                    string globalTmp = globalDest + ".tmp";
+                                    File.WriteAllBytes(globalTmp, fileBytes);
+                                    try
+                                    {
+                                        if (File.Exists(globalDest))
+                                        {
+                                            string globalBak = globalDest + ".bak";
+                                            try { if (File.Exists(globalBak)) File.Delete(globalBak); } catch { }
+                                            try { File.Move(globalDest, globalBak); } catch { File.Delete(globalDest); }
+                                        }
+                                        File.Move(globalTmp, globalDest);
+                                    }
+                                    catch
+                                    {
+                                        File.WriteAllBytes(globalDest, fileBytes);
+                                        try { if (File.Exists(globalTmp)) File.Delete(globalTmp); } catch { }
+                                    }
+                                }
+                            }
+                            catch { }
 
                             await RunOnMainThreadAsync(() =>
                             {
-                                ServerConsole.EnterCommand("reload plugins");
+                                try { ServerConsole.EnterCommand("labapi reload configs"); } catch { }
                                 return true;
                             });
 
-                            await SendResponseAsync(reqId, true, "{\"success\":true}", isRawJson: true);
+                            await SendResponseAsync(reqId, true, $"{{\"success\":true,\"name\":\"{EscapeJson(safeFileName)}\",\"size\":{fileBytes.Length},\"requiresRestart\":true}}", isRawJson: true);
                         }
                         catch (Exception ex)
                         {
                             Logger.Error($"[PluginWS] Failed to save uploaded plugin: {ex.Message}");
                             await SendResponseAsync(reqId, false, $"\"{EscapeJson(ex.Message)}\"");
+                        }
+                        break;
+                    }
+
+                    case "delete_plugin":
+                    {
+                        string name = ExtractField(rawMessage, "name");
+                        string pType = ExtractField(rawMessage, "pluginType")?.ToLower();
+                        if (string.IsNullOrWhiteSpace(name))
+                        {
+                            await SendResponseAsync(reqId, false, "\"Plugin name is required\"");
+                            return;
+                        }
+
+                        bool deleted = false;
+                        try
+                        {
+                            var pluginsDir = LabApi.Loader.Features.Paths.PathManager.Plugins;
+                            if (pluginsDir != null && pluginsDir.Exists)
+                            {
+                                foreach (var f in pluginsDir.GetFiles("*.dll", SearchOption.AllDirectories))
+                                {
+                                    if (f.Name.Equals(name, StringComparison.OrdinalIgnoreCase) ||
+                                        Path.GetFileNameWithoutExtension(f.Name).Equals(name, StringComparison.OrdinalIgnoreCase))
+                                    {
+                                        f.Delete();
+                                        deleted = true;
+                                        Logger.Info($"[PluginWS] Deleted plugin file: {f.FullName}");
+                                    }
+                                }
+                            }
+
+                            if (!deleted && LabApi.Loader.Features.Paths.PathManager.Dependencies != null && LabApi.Loader.Features.Paths.PathManager.Dependencies.Exists)
+                            {
+                                foreach (var f in LabApi.Loader.Features.Paths.PathManager.Dependencies.GetFiles("*.dll", SearchOption.AllDirectories))
+                                {
+                                    if (f.Name.Equals(name, StringComparison.OrdinalIgnoreCase) ||
+                                        Path.GetFileNameWithoutExtension(f.Name).Equals(name, StringComparison.OrdinalIgnoreCase))
+                                    {
+                                        f.Delete();
+                                        deleted = true;
+                                        Logger.Info($"[PluginWS] Deleted dependency file: {f.FullName}");
+                                    }
+                                }
+                            }
+                        }
+                        catch (Exception delEx)
+                        {
+                            Logger.Error($"[PluginWS] Error deleting plugin '{name}': {delEx.Message}");
+                        }
+
+                        await SendResponseAsync(reqId, deleted, deleted ? "{\"success\":true}" : "{\"error\":\"File not found or locked\"}", isRawJson: true);
+                        break;
+                    }
+
+                    case "get_plugin_configs_list":
+                    {
+                        var configList = new List<string>();
+                        try
+                        {
+                            var configsDir = LabApi.Loader.Features.Paths.PathManager.Configs;
+                            if (configsDir != null && configsDir.Exists)
+                            {
+                                // Port directory (e.g. configs/7777/)
+                                int port = Server.Port;
+                                string portDir = Path.Combine(configsDir.FullName, port.ToString());
+                                if (Directory.Exists(portDir))
+                                {
+                                    foreach (var subDir in Directory.GetDirectories(portDir))
+                                    {
+                                        string pluginName = Path.GetFileName(subDir);
+                                        string cfgFile = Path.Combine(subDir, "config.yml");
+                                        if (File.Exists(cfgFile))
+                                        {
+                                            configList.Add($"{{\"name\":\"{EscapeJson(pluginName)}\",\"file\":\"config.yml\"}}");
+                                        }
+                                    }
+                                }
+
+                                // Global configs in configs/
+                                foreach (var subDir in Directory.GetDirectories(configsDir.FullName))
+                                {
+                                    string dirName = Path.GetFileName(subDir);
+                                    if (int.TryParse(dirName, out _)) continue; // skip port folders
+                                    string cfgFile = Path.Combine(subDir, "config.yml");
+                                    if (File.Exists(cfgFile) && !configList.Any(c => c.Contains($"\"{EscapeJson(dirName)}\"")))
+                                    {
+                                        configList.Add($"{{\"name\":\"{EscapeJson(dirName)}\",\"file\":\"config.yml\"}}");
+                                    }
+                                }
+
+                                // Check root permissions.yml
+                                string permFile = Path.Combine(configsDir.FullName, "permissions.yml");
+                                if (File.Exists(permFile))
+                                {
+                                    configList.Add($"{{\"name\":\"LabAPI Permissions\",\"file\":\"permissions.yml\"}}");
+                                }
+                            }
+                        }
+                        catch (Exception cfgEx)
+                        {
+                            Logger.Error($"[PluginWS] Failed listing plugin configs: {cfgEx.Message}");
+                        }
+
+                        string configsJson = "[" + string.Join(",", configList) + "]";
+                        await SendResponseAsync(reqId, true, configsJson, isRawJson: true);
+                        break;
+                    }
+
+                    case "get_plugin_config":
+                    {
+                        string pluginName = ExtractField(rawMessage, "pluginName");
+                        if (string.IsNullOrWhiteSpace(pluginName))
+                        {
+                            await SendResponseAsync(reqId, false, "\"pluginName is required\"");
+                            return;
+                        }
+
+                        string resolvedPath = null;
+                        try
+                        {
+                            var configsDir = LabApi.Loader.Features.Paths.PathManager.Configs;
+                            if (configsDir != null && configsDir.Exists)
+                            {
+                                int port = Server.Port;
+                                if (pluginName.Equals("LabAPI Permissions", StringComparison.OrdinalIgnoreCase) || pluginName.Equals("permissions", StringComparison.OrdinalIgnoreCase))
+                                {
+                                    string permFile = Path.Combine(configsDir.FullName, "permissions.yml");
+                                    if (File.Exists(permFile)) resolvedPath = permFile;
+                                }
+                                else
+                                {
+                                    string portCfg = Path.Combine(configsDir.FullName, port.ToString(), pluginName, "config.yml");
+                                    if (File.Exists(portCfg))
+                                    {
+                                        resolvedPath = portCfg;
+                                    }
+                                    else
+                                    {
+                                        string globalCfg = Path.Combine(configsDir.FullName, pluginName, "config.yml");
+                                        if (File.Exists(globalCfg)) resolvedPath = globalCfg;
+                                    }
+                                }
+                            }
+                        }
+                        catch { }
+
+                        if (resolvedPath != null && File.Exists(resolvedPath))
+                        {
+                            string content = File.ReadAllText(resolvedPath);
+                            await SendResponseAsync(reqId, true, $"\"{EscapeJson(content)}\"", isRawJson: true);
+                        }
+                        else
+                        {
+                            await SendResponseAsync(reqId, false, "\"Configuration file not found for plugin\"");
+                        }
+                        break;
+                    }
+
+                    case "save_plugin_config":
+                    {
+                        string pluginName = ExtractField(rawMessage, "pluginName");
+                        string content = ExtractField(rawMessage, "content");
+
+                        if (string.IsNullOrWhiteSpace(pluginName))
+                        {
+                            await SendResponseAsync(reqId, false, "\"pluginName is required\"");
+                            return;
+                        }
+
+                        string resolvedPath = null;
+                        try
+                        {
+                            var configsDir = LabApi.Loader.Features.Paths.PathManager.Configs;
+                            if (configsDir != null && configsDir.Exists)
+                            {
+                                int port = Server.Port;
+                                if (pluginName.Equals("LabAPI Permissions", StringComparison.OrdinalIgnoreCase) || pluginName.Equals("permissions", StringComparison.OrdinalIgnoreCase))
+                                {
+                                    resolvedPath = Path.Combine(configsDir.FullName, "permissions.yml");
+                                }
+                                else
+                                {
+                                    string portDir = Path.Combine(configsDir.FullName, port.ToString(), pluginName);
+                                    if (!Directory.Exists(portDir)) Directory.CreateDirectory(portDir);
+                                    resolvedPath = Path.Combine(portDir, "config.yml");
+                                }
+                            }
+                        }
+                        catch { }
+
+                        if (resolvedPath != null)
+                        {
+                            File.WriteAllText(resolvedPath, content ?? "");
+                            Logger.Info($"[PluginWS] Saved config for plugin '{pluginName}' at {resolvedPath}");
+
+                            await RunOnMainThreadAsync(() =>
+                            {
+                                try { ServerConsole.EnterCommand("labapi reload configs"); } catch { }
+                                return true;
+                            });
+
+                            await SendResponseAsync(reqId, true, "{\"success\":true}", isRawJson: true);
+                        }
+                        else
+                        {
+                            await SendResponseAsync(reqId, false, "\"Could not resolve config file path\"");
                         }
                         break;
                     }
