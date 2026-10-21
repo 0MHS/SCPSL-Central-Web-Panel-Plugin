@@ -117,7 +117,7 @@ web_panel_plugin:
 ```
 
 ### Step 4: Start or Reload Your Server
-Restart your game server or run `reload plugins` in your server console.
+Restart your game server or run `config reload` in your server console.
 Once connected, you will see the following line in your server console:
 ```text
 [INFO] [ScpWebPanelPlugin] [PluginWS] Connected successfully! Sending authentication handshake...
