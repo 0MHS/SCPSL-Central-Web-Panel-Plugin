@@ -26,7 +26,7 @@ namespace ScpWebPanelPlugin
         {
             try
             {
-                Logger.Info("WebPanelPlugin (v2.1.1 High-Performance SaaS Client) loading via LabAPI...");
+                Logger.Info("WebPanelPlugin (v2.2.0 High-Performance SaaS Client) loading via LabAPI...");
 
                 // Capture main thread synchronization context
                 _syncContext = SynchronizationContext.Current;
@@ -396,13 +396,43 @@ namespace ScpWebPanelPlugin
             catch { }
         }
 
-        private static readonly char[] CharactersToEscape = { '\\', '"', '\n', '\r' };
+        private static bool NeedsJsonEscape(string str)
+        {
+            for (int i = 0; i < str.Length; i++)
+            {
+                char c = str[i];
+                if (c < 32 || c == '"' || c == '\\') return true;
+            }
+            return false;
+        }
 
         private static string EscapeJson(string str)
         {
             if (string.IsNullOrEmpty(str)) return "";
-            if (str.IndexOfAny(CharactersToEscape) == -1) return str;
-            return str.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\n", "\\n").Replace("\r", "\\r");
+            if (!NeedsJsonEscape(str)) return str;
+
+            var sb = new StringBuilder(str.Length + 16);
+            for (int i = 0; i < str.Length; i++)
+            {
+                char c = str[i];
+                switch (c)
+                {
+                    case '\\': sb.Append("\\\\"); break;
+                    case '"': sb.Append("\\\""); break;
+                    case '\n': sb.Append("\\n"); break;
+                    case '\r': sb.Append("\\r"); break;
+                    case '\t': sb.Append("\\t"); break;
+                    case '\b': sb.Append("\\b"); break;
+                    case '\f': sb.Append("\\f"); break;
+                    default:
+                        if (c < 32)
+                            sb.AppendFormat("\\u{0:X4}", (int)c);
+                        else
+                            sb.Append(c);
+                        break;
+                }
+            }
+            return sb.ToString();
         }
     }
 }

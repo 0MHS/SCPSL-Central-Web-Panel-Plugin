@@ -28,12 +28,14 @@ namespace ScpWebPanelPlugin
         private const int MaxLogQueueCapacity = 100;
         private readonly ConcurrentQueue<string> _priorityQueue = new ConcurrentQueue<string>();
         private readonly ConcurrentQueue<string> _logQueue = new ConcurrentQueue<string>();
-        private readonly SemaphoreSlim _queueSignal = new SemaphoreSlim(0, MaxPriorityQueueCapacity + MaxLogQueueCapacity);
+        private readonly SemaphoreSlim _queueSignal = new SemaphoreSlim(0);
         private int _priorityCount = 0;
         private int _logCount = 0;
         private Task _senderWorkerTask;
         private Task _batchLogsWorkerTask;
         private readonly ConcurrentQueue<string> _pendingLogs = new ConcurrentQueue<string>();
+        private int _pendingLogCount = 0;
+        private static readonly object _fileLock = new object();
 
         public bool IsConnected => _ws != null && _ws.State == WebSocketState.Open;
         public volatile bool IsConsoleSubscribed = false;
@@ -74,6 +76,7 @@ namespace ScpWebPanelPlugin
                 while (_pendingLogs.TryDequeue(out _)) { }
                 _priorityCount = 0;
                 _logCount = 0;
+                _pendingLogCount = 0;
             }
             catch { }
         }
@@ -211,7 +214,7 @@ namespace ScpWebPanelPlugin
 
                 if (msgType == "ping")
                 {
-                    await SendRawAsync("{\"type\":\"pong\"}", CancellationToken.None);
+                    EnqueuePriority("{\"type\":\"pong\"}");
                     return;
                 }
 
@@ -223,6 +226,11 @@ namespace ScpWebPanelPlugin
                     if (stream == "console")
                     {
                         IsConsoleSubscribed = enabled;
+                        if (!enabled)
+                        {
+                            while (_pendingLogs.TryDequeue(out _)) { }
+                            _pendingLogCount = 0;
+                        }
                         Logger.Info($"[PluginWS] Console streaming subscription updated: {enabled}");
                     }
                     return;
@@ -260,6 +268,7 @@ namespace ScpWebPanelPlugin
                                 foreach (var p in list)
                                 {
                                     if (p == null) continue;
+                                    if (idx >= array.Length) Array.Resize(ref array, Math.Max(4, array.Length * 2));
                                     array[idx++] = new PlayerSnapshot
                                     {
                                         Id = p.UserId ?? "",
@@ -269,7 +278,7 @@ namespace ScpWebPanelPlugin
                                         IsMuted = p.IsMuted
                                     };
                                 }
-                                if (idx < count) Array.Resize(ref array, idx);
+                                if (idx != array.Length) Array.Resize(ref array, idx);
                                 return array;
                             }
                             catch
@@ -383,22 +392,25 @@ namespace ScpWebPanelPlugin
                                 string bansPath = ResolveConfigFilePath("UserIdBans.txt");
                                 if (!string.IsNullOrEmpty(bansPath))
                                 {
-                                    string existing = File.Exists(bansPath) ? File.ReadAllText(bansPath) : "";
-                                    if (!existing.Contains(formattedTargetId) && !existing.Contains(targetId))
+                                    lock (_fileLock)
                                     {
-                                        DateTime nowUtc = DateTime.UtcNow;
-                                        DateTime expUtc = isPermanent ? nowUtc.AddYears(100) : nowUtc.AddMinutes(durationMinutes);
-                                        long expTicks = expUtc.Ticks;
-                                        long issTicks = nowUtc.Ticks;
-
-                                        string banLine = $"{capturedPlayerName};{formattedTargetId};{expTicks};{reason};Web Panel;{issTicks}";
-                                        string newContent = string.IsNullOrEmpty(existing.Trim()) ? banLine : existing.TrimEnd() + Environment.NewLine + banLine + Environment.NewLine;
-                                        File.WriteAllText(bansPath, newContent);
-                                        _ = RunOnMainThreadAsync(() =>
+                                        string existing = File.Exists(bansPath) ? File.ReadAllText(bansPath) : "";
+                                        if (!existing.Contains(formattedTargetId) && !existing.Contains(targetId))
                                         {
-                                            try { ServerConsole.EnterCommand("reload config"); } catch { }
-                                            return true;
-                                        });
+                                            DateTime nowUtc = DateTime.UtcNow;
+                                            DateTime expUtc = isPermanent ? nowUtc.AddYears(100) : nowUtc.AddMinutes(durationMinutes);
+                                            long expTicks = expUtc.Ticks;
+                                            long issTicks = nowUtc.Ticks;
+
+                                            string banLine = $"{capturedPlayerName};{formattedTargetId};{expTicks};{reason};Web Panel;{issTicks}";
+                                            string newContent = string.IsNullOrEmpty(existing.Trim()) ? banLine : existing.TrimEnd() + Environment.NewLine + banLine + Environment.NewLine;
+                                            File.WriteAllText(bansPath, newContent);
+                                            _ = RunOnMainThreadAsync(() =>
+                                            {
+                                                try { ServerConsole.EnterCommand("reload config"); } catch { }
+                                                return true;
+                                            });
+                                        }
                                     }
                                 }
                             }
@@ -1140,20 +1152,15 @@ namespace ScpWebPanelPlugin
                 if (_priorityQueue.TryDequeue(out _))
                 {
                     Interlocked.Decrement(ref _priorityCount);
+                    _priorityQueue.Enqueue(json);
+                    return; // Replaced an existing item; permit already exists in _queueSignal
                 }
-                else
-                {
-                    Interlocked.Decrement(ref _priorityCount);
-                    return;
-                }
+                Interlocked.Decrement(ref _priorityCount);
+                return;
             }
 
             _priorityQueue.Enqueue(json);
-            try
-            {
-                _queueSignal.Release();
-            }
-            catch (SemaphoreFullException) { }
+            _queueSignal.Release();
         }
 
         private void EnqueueLog(string json)
@@ -1165,20 +1172,15 @@ namespace ScpWebPanelPlugin
                 if (_logQueue.TryDequeue(out _))
                 {
                     Interlocked.Decrement(ref _logCount);
+                    _logQueue.Enqueue(json);
+                    return; // Replaced an existing item; permit already exists in _queueSignal
                 }
-                else
-                {
-                    Interlocked.Decrement(ref _logCount);
-                    return;
-                }
+                Interlocked.Decrement(ref _logCount);
+                return;
             }
 
             _logQueue.Enqueue(json);
-            try
-            {
-                _queueSignal.Release();
-            }
-            catch (SemaphoreFullException) { }
+            _queueSignal.Release();
         }
 
         private async Task OutboundSenderWorkerAsync(CancellationToken token)
@@ -1230,6 +1232,7 @@ namespace ScpWebPanelPlugin
                 var batch = new List<string>(20);
                 while (batch.Count < 20 && _pendingLogs.TryDequeue(out string line))
                 {
+                    Interlocked.Decrement(ref _pendingLogCount);
                     if (!string.IsNullOrWhiteSpace(line))
                     {
                         batch.Add(line);
@@ -1256,7 +1259,7 @@ namespace ScpWebPanelPlugin
             }
         }
 
-        private async Task SendResponseAsync(string reqId, bool success, string dataPayload, bool isRawJson = false)
+        private Task SendResponseAsync(string reqId, bool success, string dataPayload, bool isRawJson = false)
         {
             string json = "{" +
                 "\"type\":\"response\"," +
@@ -1265,15 +1268,9 @@ namespace ScpWebPanelPlugin
                 $"\"data\":{(isRawJson ? dataPayload : $"\"{EscapeJson(dataPayload)}\"")}" +
             "}";
 
-            // Responses to RPC commands are prioritized directly through SendRawAsync or priority queue
-            if (IsConnected)
-            {
-                await SendRawAsync(json, CancellationToken.None);
-            }
-            else
-            {
-                EnqueuePriority(json);
-            }
+            // Responses to RPC commands are strictly prioritized ahead of console logs in the outbound queue
+            EnqueuePriority(json);
+            return Task.CompletedTask;
         }
 
         public Task SendEventAsync(string eventName, string jsonPayload)
@@ -1295,10 +1292,14 @@ namespace ScpWebPanelPlugin
             if (!IsConnected || !_config.StreamConsoleLogs || !IsConsoleSubscribed) return Task.CompletedTask;
             if (string.IsNullOrWhiteSpace(logLine)) return Task.CompletedTask;
 
-            // Bounded pending queue to avoid memory ballooning if network stalls
-            if (_pendingLogs.Count < 300)
+            // Bounded pending queue with zero-lock atomic counter to avoid memory ballooning if network stalls
+            if (Interlocked.Increment(ref _pendingLogCount) <= 300)
             {
                 _pendingLogs.Enqueue(logLine);
+            }
+            else
+            {
+                Interlocked.Decrement(ref _pendingLogCount);
             }
             return Task.CompletedTask;
         }
@@ -1363,7 +1364,10 @@ namespace ScpWebPanelPlugin
                     cleanContent = cleanContent.Replace("\\r\\n", "\n").Replace("\\n", "\n").Replace("\\r", "\n");
                 }
                 cleanContent = cleanContent.Replace("\r\n", "\n").Replace("\r", "\n");
-                File.WriteAllText(path, cleanContent.Replace("\n", Environment.NewLine));
+                lock (_fileLock)
+                {
+                    File.WriteAllText(path, cleanContent.Replace("\n", Environment.NewLine));
+                }
                 return true;
             }
             catch (Exception ex)
@@ -1582,7 +1586,29 @@ namespace ScpWebPanelPlugin
                     using (var proc = Process.GetCurrentProcess())
                     {
                         stats.MemoryBytes = proc.WorkingSet64;
-                        stats.UptimeSec = (long)(DateTime.Now - proc.StartTime).TotalSeconds;
+                        try
+                        {
+                            stats.UptimeSec = (long)(DateTime.Now - proc.StartTime).TotalSeconds;
+                        }
+                        catch { }
+                    }
+                }
+                catch { }
+
+                // Linux fallback for uptime if proc.StartTime failed
+                try
+                {
+                    if (stats.UptimeSec <= 0 && File.Exists("/proc/uptime"))
+                    {
+                        string firstLine = File.ReadLines("/proc/uptime").FirstOrDefault();
+                        if (!string.IsNullOrEmpty(firstLine))
+                        {
+                            string[] p = firstLine.Split(' ');
+                            if (p.Length > 0 && double.TryParse(p[0], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out double upSec))
+                            {
+                                stats.UptimeSec = (long)upSec;
+                            }
+                        }
                     }
                 }
                 catch { }
@@ -1592,8 +1618,7 @@ namespace ScpWebPanelPlugin
                 {
                     if (File.Exists("/proc/self/status"))
                     {
-                        string[] lines = File.ReadAllLines("/proc/self/status");
-                        foreach (string line in lines)
+                        foreach (string line in File.ReadLines("/proc/self/status"))
                         {
                             if (line.StartsWith("VmRSS:", StringComparison.OrdinalIgnoreCase))
                             {
@@ -1609,8 +1634,7 @@ namespace ScpWebPanelPlugin
 
                     if (File.Exists("/proc/meminfo"))
                     {
-                        string[] memLines = File.ReadAllLines("/proc/meminfo");
-                        foreach (string line in memLines)
+                        foreach (string line in File.ReadLines("/proc/meminfo"))
                         {
                             if (line.StartsWith("MemTotal:", StringComparison.OrdinalIgnoreCase))
                             {
@@ -1721,71 +1745,107 @@ namespace ScpWebPanelPlugin
             if (string.IsNullOrEmpty(json) || string.IsNullOrEmpty(field)) return "";
             try
             {
-                // Fast path: find "field": "value" without any regex allocation
-                string keyPattern = $"\"{field}\"";
-                int keyIdx = json.IndexOf(keyPattern, StringComparison.Ordinal);
-                if (keyIdx != -1)
-                {
-                    int colonIdx = json.IndexOf(':', keyIdx + keyPattern.Length);
-                    if (colonIdx != -1)
-                    {
-                        // Skip whitespace
-                        int valStart = colonIdx + 1;
-                        while (valStart < json.Length && char.IsWhiteSpace(json[valStart])) valStart++;
+                int len = json.Length;
+                int depth = 0;
+                int i = 0;
 
-                        if (valStart < json.Length)
+                while (i < len)
+                {
+                    char c = json[i];
+                    if (c == '"')
+                    {
+                        int strStart = ++i;
+                        bool escaped = false;
+                        while (i < len)
                         {
-                            if (json[valStart] == '"')
+                            char sc = json[i];
+                            if (escaped)
                             {
-                                valStart++; // skip opening quote
-                                var sb = new StringBuilder();
-                                bool escaped = false;
-                                for (int i = valStart; i < json.Length; i++)
+                                escaped = false;
+                            }
+                            else if (sc == '\\')
+                            {
+                                escaped = true;
+                            }
+                            else if (sc == '"')
+                            {
+                                break;
+                            }
+                            i++;
+                        }
+                        int strLen = i - strStart;
+                        i++; // skip closing quote
+
+                        // Only match keys at the root object level (depth == 1)
+                        if (depth == 1)
+                        {
+                            while (i < len && char.IsWhiteSpace(json[i])) i++;
+                            if (i < len && json[i] == ':')
+                            {
+                                i++; // skip colon
+                                while (i < len && char.IsWhiteSpace(json[i])) i++;
+
+                                if (strLen == field.Length && string.CompareOrdinal(json, strStart, field, 0, strLen) == 0)
                                 {
-                                    char c = json[i];
-                                    if (escaped)
+                                    if (i < len && json[i] == '"')
                                     {
-                                        switch (c)
+                                        i++; // skip opening quote
+                                        var sb = new StringBuilder();
+                                        bool valEscaped = false;
+                                        while (i < len)
                                         {
-                                            case '"': sb.Append('"'); break;
-                                            case '\\': sb.Append('\\'); break;
-                                            case '/': sb.Append('/'); break;
-                                            case 'b': sb.Append('\b'); break;
-                                            case 'f': sb.Append('\f'); break;
-                                            case 'n': sb.Append('\n'); break;
-                                            case 'r': sb.Append('\r'); break;
-                                            case 't': sb.Append('\t'); break;
-                                            default: sb.Append(c); break;
+                                            char vc = json[i];
+                                            if (valEscaped)
+                                            {
+                                                switch (vc)
+                                                {
+                                                    case '"': sb.Append('"'); break;
+                                                    case '\\': sb.Append('\\'); break;
+                                                    case '/': sb.Append('/'); break;
+                                                    case 'b': sb.Append('\b'); break;
+                                                    case 'f': sb.Append('\f'); break;
+                                                    case 'n': sb.Append('\n'); break;
+                                                    case 'r': sb.Append('\r'); break;
+                                                    case 't': sb.Append('\t'); break;
+                                                    default: sb.Append(vc); break;
+                                                }
+                                                valEscaped = false;
+                                            }
+                                            else if (vc == '\\')
+                                            {
+                                                valEscaped = true;
+                                            }
+                                            else if (vc == '"')
+                                            {
+                                                return sb.ToString();
+                                            }
+                                            else
+                                            {
+                                                sb.Append(vc);
+                                            }
+                                            i++;
                                         }
-                                        escaped = false;
-                                    }
-                                    else if (c == '\\')
-                                    {
-                                        escaped = true;
-                                    }
-                                    else if (c == '"')
-                                    {
                                         return sb.ToString();
                                     }
                                     else
                                     {
-                                        sb.Append(c);
+                                        int valStart = i;
+                                        while (i < len && json[i] != ',' && json[i] != '}' && json[i] != ']' && !char.IsWhiteSpace(json[i]))
+                                        {
+                                            i++;
+                                        }
+                                        return json.Substring(valStart, i - valStart).Trim();
                                     }
                                 }
-                                return sb.ToString();
-                            }
-                            else
-                            {
-                                // Number, boolean, etc.
-                                int valEnd = valStart;
-                                while (valEnd < json.Length && json[valEnd] != ',' && json[valEnd] != '}' && json[valEnd] != ']' && !char.IsWhiteSpace(json[valEnd]))
-                                {
-                                    valEnd++;
-                                }
-                                return json.Substring(valStart, valEnd - valStart).Trim();
                             }
                         }
+                        continue;
                     }
+
+                    if (c == '{' || c == '[') depth++;
+                    else if (c == '}' || c == ']') depth--;
+
+                    i++;
                 }
 
                 return "";
@@ -1796,12 +1856,20 @@ namespace ScpWebPanelPlugin
             }
         }
 
-        private static readonly char[] CharactersToEscape = { '\\', '"', '\n', '\r', '\t', '\b', '\f' };
+        private static bool NeedsJsonEscape(string str)
+        {
+            for (int i = 0; i < str.Length; i++)
+            {
+                char c = str[i];
+                if (c < 32 || c == '"' || c == '\\') return true;
+            }
+            return false;
+        }
 
         private static string EscapeJson(string str)
         {
             if (string.IsNullOrEmpty(str)) return "";
-            if (str.IndexOfAny(CharactersToEscape) == -1) return str;
+            if (!NeedsJsonEscape(str)) return str;
 
             var sb = new StringBuilder(str.Length + 16);
             for (int i = 0; i < str.Length; i++)
