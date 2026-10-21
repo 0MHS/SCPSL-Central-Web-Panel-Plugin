@@ -16,7 +16,7 @@ namespace ScpWebPanelPlugin
         public override string Name => "WebPanelPlugin";
         public override string Description => "Web Panel Reverse WebSocket & Telemetry Client";
         public override string Author => "MHS";
-        public override Version Version => new Version(2, 1, 1);
+        public override Version Version => new Version(2, 2, 0);
         public override Version RequiredApiVersion => new Version(1, 0, 0);
 
         public PluginWebSocketClient WsClient { get; private set; }
@@ -108,7 +108,7 @@ namespace ScpWebPanelPlugin
         {
             try
             {
-                if (WsClient == null || !WsClient.IsConnected) return;
+                if (WsClient == null || !WsClient.IsConnected || !WsClient.IsConsoleSubscribed) return;
                 if (string.IsNullOrWhiteSpace(condition)) return;
 
                 // 1. Filter out internal Unity GUI, Audio, and scene noise that floods the console
@@ -193,6 +193,17 @@ namespace ScpWebPanelPlugin
             }
         }
 
+        private struct RoundEndSnapshot
+        {
+            public string LeadingTeam;
+            public int Duration;
+            public int ScpCount;
+            public int HumanCount;
+            public int EscapedDClass;
+            public int EscapedScientists;
+            public int Kills;
+        }
+
         private void OnRoundEnded(RoundEndedEventArgs ev)
         {
             try
@@ -200,46 +211,63 @@ namespace ScpWebPanelPlugin
                 if (Config != null && !Config.ReportRoundStats) return;
                 if (WsClient == null || !WsClient.IsConnected) return;
 
-                string winner = "Draw";
-                string teamStr = ev.LeadingTeam.ToString();
-                switch (teamStr)
+                // Main-thread safe snapshot of round end parameters (<0.01ms)
+                var snap = new RoundEndSnapshot
                 {
-                    case "FacilityForces":
-                        winner = "MTF";
-                        break;
-                    case "ChaosInsurgency":
-                        winner = "ClassD";
-                        break;
-                    case "Anomalies":
-                        winner = "SCPs";
-                        break;
-                    case "Draw":
-                        winner = "Draw";
-                        break;
-                    default:
-                        winner = teamStr;
-                        break;
-                }
+                    LeadingTeam = ev.LeadingTeam.ToString(),
+                    Duration = (int)Round.Duration.TotalSeconds,
+                    ScpCount = Round.SurvivingSCPs,
+                    HumanCount = Player.List != null ? Player.List.Count : 0,
+                    EscapedDClass = Round.EscapedClassD,
+                    EscapedScientists = Round.EscapedScientists,
+                    Kills = Round.TotalDeaths
+                };
 
-                int duration = (int)Round.Duration.TotalSeconds;
-                int scpCount = Round.SurvivingSCPs;
-                int humanCount = Player.List.Count;
-                int escapedDClass = Round.EscapedClassD;
-                int escapedScientists = Round.EscapedScientists;
-                int kills = Round.TotalDeaths;
+                // Offload JSON construction and network transmission asynchronously off the main thread
+                Task.Run(async () =>
+                {
+                    try
+                    {
+                        if (WsClient == null || !WsClient.IsConnected) return;
 
-                string json = "{" +
-                    $"\"winner\":\"{winner}\"," +
-                    $"\"duration\":{duration}," +
-                    $"\"scpCount\":{scpCount}," +
-                    $"\"humanCount\":{humanCount}," +
-                    $"\"escapedDClass\":{escapedDClass}," +
-                    $"\"escapedScientists\":{escapedScientists}," +
-                    $"\"kills\":{kills}" +
-                "}";
+                        string winner = "Draw";
+                        switch (snap.LeadingTeam)
+                        {
+                            case "FacilityForces":
+                                winner = "MTF";
+                                break;
+                            case "ChaosInsurgency":
+                                winner = "ClassD";
+                                break;
+                            case "Anomalies":
+                                winner = "SCPs";
+                                break;
+                            case "Draw":
+                                winner = "Draw";
+                                break;
+                            default:
+                                winner = snap.LeadingTeam;
+                                break;
+                        }
 
-                Logger.Info($"[WebPanelPlugin] Round ended. Reporting winner: {winner}, duration: {duration}s over WebSocket...");
-                _ = WsClient.SendEventAsync("round_ended", json);
+                        string json = "{" +
+                            $"\"winner\":\"{EscapeJson(winner)}\"," +
+                            $"\"duration\":{snap.Duration}," +
+                            $"\"scpCount\":{snap.ScpCount}," +
+                            $"\"humanCount\":{snap.HumanCount}," +
+                            $"\"escapedDClass\":{snap.EscapedDClass}," +
+                            $"\"escapedScientists\":{snap.EscapedScientists}," +
+                            $"\"kills\":{snap.Kills}" +
+                        "}";
+
+                        Logger.Info($"[WebPanelPlugin] Round ended. Reporting winner: {winner}, duration: {snap.Duration}s over WebSocket...");
+                        await WsClient.SendEventAsync("round_ended", json);
+                    }
+                    catch (Exception ex)
+                    {
+                        Logger.Error($"[WebPanelPlugin] Error in OnRoundEnded offload: {ex.Message}");
+                    }
+                });
             }
             catch (Exception ex)
             {
@@ -358,7 +386,7 @@ namespace ScpWebPanelPlugin
         {
             try
             {
-                if (WsClient == null || !WsClient.IsConnected) return;
+                if (WsClient == null || !WsClient.IsConnected || !WsClient.IsConsoleSubscribed) return;
                 string resp = ev?.Response;
                 if (!string.IsNullOrWhiteSpace(resp))
                 {
@@ -368,9 +396,12 @@ namespace ScpWebPanelPlugin
             catch { }
         }
 
+        private static readonly char[] CharactersToEscape = { '\\', '"', '\n', '\r' };
+
         private static string EscapeJson(string str)
         {
             if (string.IsNullOrEmpty(str)) return "";
+            if (str.IndexOfAny(CharactersToEscape) == -1) return str;
             return str.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\n", "\\n").Replace("\r", "\\r");
         }
     }

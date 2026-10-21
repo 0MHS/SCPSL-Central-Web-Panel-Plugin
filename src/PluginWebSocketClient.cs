@@ -23,14 +23,20 @@ namespace ScpWebPanelPlugin
         private bool _isRunning;
         private readonly SemaphoreSlim _sendLock = new SemaphoreSlim(1, 1);
 
-        // Bounded outbound message queue to prevent memory leaks and thread contention
-        private const int MaxQueueCapacity = 200;
-        private readonly ConcurrentQueue<string> _outboundQueue = new ConcurrentQueue<string>();
-        private readonly SemaphoreSlim _queueSignal = new SemaphoreSlim(0, MaxQueueCapacity);
-        private int _queueCount = 0;
+        // Dual queues: prioritized RPC responses, reports, round events vs batched console logs
+        private const int MaxPriorityQueueCapacity = 200;
+        private const int MaxLogQueueCapacity = 100;
+        private readonly ConcurrentQueue<string> _priorityQueue = new ConcurrentQueue<string>();
+        private readonly ConcurrentQueue<string> _logQueue = new ConcurrentQueue<string>();
+        private readonly SemaphoreSlim _queueSignal = new SemaphoreSlim(0, MaxPriorityQueueCapacity + MaxLogQueueCapacity);
+        private int _priorityCount = 0;
+        private int _logCount = 0;
         private Task _senderWorkerTask;
+        private Task _batchLogsWorkerTask;
+        private readonly ConcurrentQueue<string> _pendingLogs = new ConcurrentQueue<string>();
 
         public bool IsConnected => _ws != null && _ws.State == WebSocketState.Open;
+        public volatile bool IsConsoleSubscribed = false;
 
         public PluginWebSocketClient(Config config, SynchronizationContext syncContext)
         {
@@ -44,6 +50,7 @@ namespace ScpWebPanelPlugin
             _isRunning = true;
             _cts = new CancellationTokenSource();
             _senderWorkerTask = Task.Run(() => OutboundSenderWorkerAsync(_cts.Token));
+            _batchLogsWorkerTask = Task.Run(() => ConsoleLogBatchWorkerAsync(_cts.Token));
             Task.Run(() => ConnectionLoopAsync(_cts.Token));
         }
 
@@ -62,8 +69,11 @@ namespace ScpWebPanelPlugin
                 _ws?.Dispose();
                 _ws = null;
 
-                while (_outboundQueue.TryDequeue(out _)) { }
-                _queueCount = 0;
+                while (_priorityQueue.TryDequeue(out _)) { }
+                while (_logQueue.TryDequeue(out _)) { }
+                while (_pendingLogs.TryDequeue(out _)) { }
+                _priorityCount = 0;
+                _logCount = 0;
             }
             catch { }
         }
@@ -142,7 +152,7 @@ namespace ScpWebPanelPlugin
                 $"\"token\":\"{EscapeJson(_config.ServerToken)}\"," +
                 $"\"serverName\":\"{serverName}\"," +
                 $"\"port\":{port}," +
-                $"\"version\":\"2.1.0\"" +
+                $"\"version\":\"2.2.0\"" +
             "}";
 
             await SendRawAsync(authPayload, token);
@@ -154,25 +164,39 @@ namespace ScpWebPanelPlugin
 
             while (_ws != null && _ws.State == WebSocketState.Open && !token.IsCancellationRequested)
             {
-                using (var ms = new MemoryStream())
+                WebSocketReceiveResult result = await _ws.ReceiveAsync(new ArraySegment<byte>(buffer), token);
+                if (result.MessageType == WebSocketMessageType.Close)
                 {
-                    WebSocketReceiveResult result;
-                    do
-                    {
-                        result = await _ws.ReceiveAsync(new ArraySegment<byte>(buffer), token);
-                        if (result.MessageType == WebSocketMessageType.Close)
-                        {
-                            Logger.Info("[PluginWS] Central server requested connection close.");
-                            await _ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "Closing", token);
-                            return;
-                        }
-                        ms.Write(buffer, 0, result.Count);
-                    }
-                    while (!result.EndOfMessage);
-
-                    string message = Encoding.UTF8.GetString(ms.ToArray());
-                    _ = ProcessIncomingMessageAsync(message);
+                    Logger.Info("[PluginWS] Central server requested connection close.");
+                    await _ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "Closing", token);
+                    return;
                 }
+
+                string message;
+                if (result.EndOfMessage)
+                {
+                    // Zero-copy direct decode for single-frame messages (virtually all RPC calls and pings)
+                    message = Encoding.UTF8.GetString(buffer, 0, result.Count);
+                }
+                else
+                {
+                    // Multi-frame fallback for large payloads (e.g. plugin DLL uploads)
+                    using (var ms = new MemoryStream())
+                    {
+                        ms.Write(buffer, 0, result.Count);
+                        do
+                        {
+                            result = await _ws.ReceiveAsync(new ArraySegment<byte>(buffer), token);
+                            if (result.MessageType == WebSocketMessageType.Close) return;
+                            ms.Write(buffer, 0, result.Count);
+                        }
+                        while (!result.EndOfMessage);
+
+                        message = Encoding.UTF8.GetString(ms.GetBuffer(), 0, (int)ms.Length);
+                    }
+                }
+
+                _ = ProcessIncomingMessageAsync(message);
             }
         }
 
@@ -188,6 +212,19 @@ namespace ScpWebPanelPlugin
                 if (msgType == "ping")
                 {
                     await SendRawAsync("{\"type\":\"pong\"}", CancellationToken.None);
+                    return;
+                }
+
+                if (msgType == "stream_control")
+                {
+                    string stream = ExtractField(message, "stream");
+                    string enabledStr = ExtractField(message, "enabled");
+                    bool enabled = enabledStr.Equals("true", StringComparison.OrdinalIgnoreCase);
+                    if (stream == "console")
+                    {
+                        IsConsoleSubscribed = enabled;
+                        Logger.Info($"[PluginWS] Console streaming subscription updated: {enabled}");
+                    }
                     return;
                 }
 
@@ -211,7 +248,37 @@ namespace ScpWebPanelPlugin
                 {
                     case "get_players":
                     {
-                        string playersJson = await RunOnMainThreadAsync(() => GetPlayersJson());
+                        var snapshots = await RunOnMainThreadAsync(() =>
+                        {
+                            try
+                            {
+                                var list = Player.List;
+                                if (list == null) return Array.Empty<PlayerSnapshot>();
+                                int count = list.Count;
+                                var array = new PlayerSnapshot[count];
+                                int idx = 0;
+                                foreach (var p in list)
+                                {
+                                    if (p == null) continue;
+                                    array[idx++] = new PlayerSnapshot
+                                    {
+                                        Id = p.UserId ?? "",
+                                        Name = p.Nickname ?? "",
+                                        Role = p.Role.ToString() ?? "",
+                                        Hp = p.Health,
+                                        IsMuted = p.IsMuted
+                                    };
+                                }
+                                if (idx < count) Array.Resize(ref array, idx);
+                                return array;
+                            }
+                            catch
+                            {
+                                return Array.Empty<PlayerSnapshot>();
+                            }
+                        });
+
+                        string playersJson = await Task.Run(() => SerializePlayers(snapshots));
                         await SendResponseAsync(reqId, true, playersJson, isRawJson: true);
                         break;
                     }
@@ -272,12 +339,12 @@ namespace ScpWebPanelPlugin
                         // For permanent bans, 100 years = 52,560,000 minutes = 3,153,600,000 seconds
                         long finalDurationSec = isPermanent ? 3153600000L : durationMinutes * 60L;
 
+                        string playerName = formattedTargetId;
                         bool ok = await RunOnMainThreadAsync(() =>
                         {
                             try
                             {
-                                // Find player name if online
-                                string playerName = formattedTargetId;
+                                // 1. Main-thread: Find online player, capture name and execute instant kick
                                 foreach (var p in Player.List)
                                 {
                                     if (p != null && (p.UserId == formattedTargetId || p.UserId == targetId || p.UserId.StartsWith(targetId)))
@@ -288,7 +355,7 @@ namespace ScpWebPanelPlugin
                                     }
                                 }
 
-                                // 1. Attempt ServerConsole.EnterCommand
+                                // 2. Main-thread: Dispatch ban console command
                                 try
                                 {
                                     ServerConsole.EnterCommand($"ban {formattedTargetId} {finalDurationSec} {reason}");
@@ -298,38 +365,46 @@ namespace ScpWebPanelPlugin
                                     Logger.Warn($"[PluginWS] ServerConsole ban command failed: {bEx.Message}");
                                 }
 
-                                // 2. Direct Fallback/Guarantor: Ensure entry is appended to UserIdBans.txt
-                                try
-                                {
-                                    string bansPath = ResolveConfigFilePath("UserIdBans.txt");
-                                    if (!string.IsNullOrEmpty(bansPath))
-                                    {
-                                        string existing = File.Exists(bansPath) ? File.ReadAllText(bansPath) : "";
-                                        if (!existing.Contains(formattedTargetId) && !existing.Contains(targetId))
-                                        {
-                                            DateTime nowUtc = DateTime.UtcNow;
-                                            DateTime expUtc = isPermanent ? nowUtc.AddYears(100) : nowUtc.AddMinutes(durationMinutes);
-                                            long expTicks = expUtc.Ticks;
-                                            long issTicks = nowUtc.Ticks;
-
-                                            string banLine = $"{playerName};{formattedTargetId};{expTicks};{reason};Web Panel;{issTicks}";
-                                            string newContent = string.IsNullOrEmpty(existing.Trim()) ? banLine : existing.TrimEnd() + Environment.NewLine + banLine + Environment.NewLine;
-                                            File.WriteAllText(bansPath, newContent);
-                                            try { ServerConsole.EnterCommand("reload config"); } catch { }
-                                        }
-                                    }
-                                }
-                                catch (Exception fEx)
-                                {
-                                    Logger.Warn($"[PluginWS] Direct UserIdBans.txt write fallback failed: {fEx.Message}");
-                                }
-
                                 return true;
                             }
                             catch (Exception ex)
                             {
-                                Logger.Error($"[PluginWS] Error executing ban: {ex.Message}");
+                                Logger.Error($"[PluginWS] Error executing ban on main thread: {ex.Message}");
                                 return false;
+                            }
+                        });
+
+                        // 3. Background Task: Offload fallback UserIdBans.txt disk file I/O off the main thread to protect tickrate
+                        string capturedPlayerName = playerName;
+                        _ = Task.Run(() =>
+                        {
+                            try
+                            {
+                                string bansPath = ResolveConfigFilePath("UserIdBans.txt");
+                                if (!string.IsNullOrEmpty(bansPath))
+                                {
+                                    string existing = File.Exists(bansPath) ? File.ReadAllText(bansPath) : "";
+                                    if (!existing.Contains(formattedTargetId) && !existing.Contains(targetId))
+                                    {
+                                        DateTime nowUtc = DateTime.UtcNow;
+                                        DateTime expUtc = isPermanent ? nowUtc.AddYears(100) : nowUtc.AddMinutes(durationMinutes);
+                                        long expTicks = expUtc.Ticks;
+                                        long issTicks = nowUtc.Ticks;
+
+                                        string banLine = $"{capturedPlayerName};{formattedTargetId};{expTicks};{reason};Web Panel;{issTicks}";
+                                        string newContent = string.IsNullOrEmpty(existing.Trim()) ? banLine : existing.TrimEnd() + Environment.NewLine + banLine + Environment.NewLine;
+                                        File.WriteAllText(bansPath, newContent);
+                                        _ = RunOnMainThreadAsync(() =>
+                                        {
+                                            try { ServerConsole.EnterCommand("reload config"); } catch { }
+                                            return true;
+                                        });
+                                    }
+                                }
+                            }
+                            catch (Exception fEx)
+                            {
+                                Logger.Warn($"[PluginWS] Direct UserIdBans.txt write fallback failed: {fEx.Message}");
                             }
                         });
 
@@ -367,30 +442,7 @@ namespace ScpWebPanelPlugin
                             return false;
                         });
 
-                        if (ok && durationMinutes > 0)
-                        {
-                            _ = Task.Run(async () =>
-                            {
-                                try
-                                {
-                                    await Task.Delay(TimeSpan.FromMinutes(durationMinutes));
-                                    _ = RunOnMainThreadAsync(() =>
-                                    {
-                                        foreach (var p in Player.List)
-                                        {
-                                            if (p != null && (p.UserId == targetId || p.UserId.StartsWith(targetId)))
-                                            {
-                                                VoiceChat.VoiceChatMutes.RevokeLocalMute(p.UserId, false);
-                                                Logger.Info($"[PluginWS] Auto-unmuted {p.Nickname} ({p.UserId}) after timer expired.");
-                                            }
-                                        }
-                                        return true;
-                                    });
-                                }
-                                catch { }
-                            });
-                        }
-
+                        // Dangling unmanaged Task.Delay removed. Active mutes and durations are tracked and revoked centrally by Web Panel.
                         await SendResponseAsync(reqId, ok, ok ? "{\"success\":true}" : "{\"error\":\"Player not found online\"}", isRawJson: true);
                         break;
                     }
@@ -573,11 +625,6 @@ namespace ScpWebPanelPlugin
                                 return $"[Error] {ex.Message}";
                             }
                         });
-
-                        if (!string.IsNullOrWhiteSpace(commandOutput))
-                        {
-                            _ = SendConsoleLogAsync(commandOutput);
-                        }
 
                         await SendResponseAsync(reqId, true, $"{{\"result\":\"{EscapeJson(commandOutput)}\"}}", isRawJson: true);
                         break;
@@ -1052,7 +1099,20 @@ namespace ScpWebPanelPlugin
 
                     case "get_status":
                     {
-                        string statusJson = await RunOnMainThreadAsync(() => GetServerStatusJson());
+                        var mainSnap = await RunOnMainThreadAsync(() =>
+                        {
+                            int pCount = 0;
+                            try { pCount = Player.List != null ? Player.List.Count : 0; } catch { }
+                            return new StatusSnapshot
+                            {
+                                Tps = Server.Tps,
+                                PlayerCount = pCount,
+                                MaxPlayers = Server.MaxPlayers,
+                                Port = Server.Port
+                            };
+                        });
+
+                        string statusJson = await Task.Run(() => BuildServerStatusJson(mainSnap));
                         await SendResponseAsync(reqId, true, statusJson, isRawJson: true);
                         break;
                     }
@@ -1071,34 +1131,54 @@ namespace ScpWebPanelPlugin
             }
         }
 
-        private void EnqueueOutbound(string json)
+        private void EnqueuePriority(string json)
         {
             if (!_isRunning || !_config.IsEnabled) return;
 
-            // Bounded check: if queue is overflowing due to network lag/disconnect, drop oldest message to protect tickrate
-            if (Interlocked.Increment(ref _queueCount) > MaxQueueCapacity)
+            if (Interlocked.Increment(ref _priorityCount) > MaxPriorityQueueCapacity)
             {
-                // Dequeue and discard oldest message to maintain strict bound
-                if (_outboundQueue.TryDequeue(out _))
+                if (_priorityQueue.TryDequeue(out _))
                 {
-                    Interlocked.Decrement(ref _queueCount);
+                    Interlocked.Decrement(ref _priorityCount);
                 }
                 else
                 {
-                    Interlocked.Decrement(ref _queueCount);
+                    Interlocked.Decrement(ref _priorityCount);
                     return;
                 }
             }
 
-            _outboundQueue.Enqueue(json);
+            _priorityQueue.Enqueue(json);
             try
             {
                 _queueSignal.Release();
             }
-            catch (SemaphoreFullException)
+            catch (SemaphoreFullException) { }
+        }
+
+        private void EnqueueLog(string json)
+        {
+            if (!_isRunning || !_config.IsEnabled) return;
+
+            if (Interlocked.Increment(ref _logCount) > MaxLogQueueCapacity)
             {
-                // Handled gracefully
+                if (_logQueue.TryDequeue(out _))
+                {
+                    Interlocked.Decrement(ref _logCount);
+                }
+                else
+                {
+                    Interlocked.Decrement(ref _logCount);
+                    return;
+                }
             }
+
+            _logQueue.Enqueue(json);
+            try
+            {
+                _queueSignal.Release();
+            }
+            catch (SemaphoreFullException) { }
         }
 
         private async Task OutboundSenderWorkerAsync(CancellationToken token)
@@ -1114,16 +1194,65 @@ namespace ScpWebPanelPlugin
                     break;
                 }
 
-                if (_outboundQueue.TryDequeue(out string message))
+                string message = null;
+                // Dual queue scheduling: strictly prioritize RPC responses, reports, and round stats over console logs
+                if (_priorityQueue.TryDequeue(out message))
                 {
-                    Interlocked.Decrement(ref _queueCount);
+                    Interlocked.Decrement(ref _priorityCount);
+                }
+                else if (_logQueue.TryDequeue(out message))
+                {
+                    Interlocked.Decrement(ref _logCount);
+                }
 
-                    // Rate limiting check & transmission
-                    if (IsConnected)
+                if (message != null && IsConnected)
+                {
+                    await SendRawAsync(message, token);
+                }
+            }
+        }
+
+        private async Task ConsoleLogBatchWorkerAsync(CancellationToken token)
+        {
+            while (_isRunning && !token.IsCancellationRequested)
+            {
+                try
+                {
+                    await Task.Delay(100, token);
+                }
+                catch (OperationCanceledException)
+                {
+                    break;
+                }
+
+                if (!_isRunning || !IsConnected || !IsConsoleSubscribed || _pendingLogs.IsEmpty) continue;
+
+                var batch = new List<string>(20);
+                while (batch.Count < 20 && _pendingLogs.TryDequeue(out string line))
+                {
+                    if (!string.IsNullOrWhiteSpace(line))
                     {
-                        await SendRawAsync(message, token);
+                        batch.Add(line);
                     }
                 }
+
+                if (batch.Count == 0) continue;
+
+                // Flush up to 20 lines every 100ms in a single TCP frame
+                var sb = new StringBuilder(batch.Count * 96 + 64);
+                sb.Append("{\"type\":\"console_logs\",\"messages\":[");
+                for (int i = 0; i < batch.Count; i++)
+                {
+                    if (i > 0) sb.Append(',');
+                    sb.Append('"');
+                    sb.Append(EscapeJson(batch[i]));
+                    sb.Append('"');
+                }
+                sb.Append("],\"timestamp\":\"");
+                sb.Append(DateTime.UtcNow.ToString("O"));
+                sb.Append("\"}");
+
+                EnqueueLog(sb.ToString());
             }
         }
 
@@ -1136,14 +1265,14 @@ namespace ScpWebPanelPlugin
                 $"\"data\":{(isRawJson ? dataPayload : $"\"{EscapeJson(dataPayload)}\"")}" +
             "}";
 
-            // Responses to RPC commands are prioritized directly through SendRawAsync or enqueued
+            // Responses to RPC commands are prioritized directly through SendRawAsync or priority queue
             if (IsConnected)
             {
                 await SendRawAsync(json, CancellationToken.None);
             }
             else
             {
-                EnqueueOutbound(json);
+                EnqueuePriority(json);
             }
         }
 
@@ -1157,21 +1286,20 @@ namespace ScpWebPanelPlugin
                 $"\"payload\":{jsonPayload}" +
             "}";
 
-            EnqueueOutbound(envelope);
+            EnqueuePriority(envelope);
             return Task.CompletedTask;
         }
 
         public Task SendConsoleLogAsync(string logLine)
         {
-            if (!IsConnected || !_config.StreamConsoleLogs) return Task.CompletedTask;
+            if (!IsConnected || !_config.StreamConsoleLogs || !IsConsoleSubscribed) return Task.CompletedTask;
+            if (string.IsNullOrWhiteSpace(logLine)) return Task.CompletedTask;
 
-            string envelope = "{" +
-                "\"type\":\"console_log\"," +
-                $"\"message\":\"{EscapeJson(logLine)}\"," +
-                $"\"timestamp\":\"{DateTime.UtcNow:O}\"" +
-            "}";
-
-            EnqueueOutbound(envelope);
+            // Bounded pending queue to avoid memory ballooning if network stalls
+            if (_pendingLogs.Count < 300)
+            {
+                _pendingLogs.Enqueue(logLine);
+            }
             return Task.CompletedTask;
         }
 
@@ -1245,7 +1373,26 @@ namespace ScpWebPanelPlugin
             }
         }
 
+        private static readonly ConcurrentDictionary<string, string> _configPathCache = new ConcurrentDictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
         private string ResolveConfigFilePath(string fileName)
+        {
+            if (string.IsNullOrEmpty(fileName)) return fileName;
+
+            if (_configPathCache.TryGetValue(fileName, out string cachedPath) && File.Exists(cachedPath))
+            {
+                return cachedPath;
+            }
+
+            string resolved = ResolveConfigFilePathInternal(fileName);
+            if (!string.IsNullOrEmpty(resolved) && File.Exists(resolved))
+            {
+                _configPathCache[fileName] = resolved;
+            }
+            return resolved;
+        }
+
+        private string ResolveConfigFilePathInternal(string fileName)
         {
             try
             {
@@ -1391,26 +1538,56 @@ namespace ScpWebPanelPlugin
             }
         }
 
-        private string GetServerStatusJson()
+        private struct StatusSnapshot
         {
-            try
-            {
-                long memoryBytes = 0;
-                long uptimeSec = 0;
-                long totalSystemBytes = 0;
-                long freeSystemBytes = 0;
+            public double Tps;
+            public int PlayerCount;
+            public int MaxPlayers;
+            public ushort Port;
+        }
 
+        private struct PlayerSnapshot
+        {
+            public string Id;
+            public string Name;
+            public string Role;
+            public float Hp;
+            public bool IsMuted;
+        }
+
+        private class CachedProcMem
+        {
+            public long MemoryBytes;
+            public long TotalSystemBytes;
+            public long FreeSystemBytes;
+            public long UptimeSec;
+            public DateTime CachedAt;
+        }
+
+        private static CachedProcMem _procMemCache;
+        private static readonly object _procMemLock = new object();
+
+        private static CachedProcMem GetProcMemStats()
+        {
+            lock (_procMemLock)
+            {
+                if (_procMemCache != null && (DateTime.UtcNow - _procMemCache.CachedAt).TotalSeconds < 2.0)
+                {
+                    return _procMemCache;
+                }
+
+                var stats = new CachedProcMem { CachedAt = DateTime.UtcNow };
                 try
                 {
                     using (var proc = Process.GetCurrentProcess())
                     {
-                        memoryBytes = proc.WorkingSet64;
-                        uptimeSec = (long)(DateTime.Now - proc.StartTime).TotalSeconds;
+                        stats.MemoryBytes = proc.WorkingSet64;
+                        stats.UptimeSec = (long)(DateTime.Now - proc.StartTime).TotalSeconds;
                     }
                 }
                 catch { }
 
-                // On Linux, inspect /proc for exact VmRSS and system total/free RAM
+                // Linux /proc telemetry checks
                 try
                 {
                     if (File.Exists("/proc/self/status"))
@@ -1423,7 +1600,7 @@ namespace ScpWebPanelPlugin
                                 string[] parts = line.Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
                                 if (parts.Length >= 2 && long.TryParse(parts[1], out long vmrssKb))
                                 {
-                                    memoryBytes = vmrssKb * 1024;
+                                    stats.MemoryBytes = vmrssKb * 1024;
                                 }
                                 break;
                             }
@@ -1440,16 +1617,16 @@ namespace ScpWebPanelPlugin
                                 string[] parts = line.Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
                                 if (parts.Length >= 2 && long.TryParse(parts[1], out long totalKb))
                                 {
-                                    totalSystemBytes = totalKb * 1024;
+                                    stats.TotalSystemBytes = totalKb * 1024;
                                 }
                             }
                             else if (line.StartsWith("MemAvailable:", StringComparison.OrdinalIgnoreCase) ||
-                                     (freeSystemBytes == 0 && line.StartsWith("MemFree:", StringComparison.OrdinalIgnoreCase)))
+                                     (stats.FreeSystemBytes == 0 && line.StartsWith("MemFree:", StringComparison.OrdinalIgnoreCase)))
                             {
                                 string[] parts = line.Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
                                 if (parts.Length >= 2 && long.TryParse(parts[1], out long freeKb))
                                 {
-                                    freeSystemBytes = freeKb * 1024;
+                                    stats.FreeSystemBytes = freeKb * 1024;
                                 }
                             }
                         }
@@ -1457,22 +1634,28 @@ namespace ScpWebPanelPlugin
                 }
                 catch { }
 
-                long memoryMb = memoryBytes > 0 ? memoryBytes / (1024 * 1024) : 0;
-                int playerCount = Player.List != null ? Player.List.Count : 0;
-                int maxPlayers = Server.MaxPlayers;
-                ushort port = Server.Port;
-                double tps = Server.Tps;
+                _procMemCache = stats;
+                return stats;
+            }
+        }
+
+        private static string BuildServerStatusJson(StatusSnapshot mainSnap)
+        {
+            try
+            {
+                var proc = GetProcMemStats();
+                long memoryMb = proc.MemoryBytes > 0 ? proc.MemoryBytes / (1024 * 1024) : 0;
 
                 return "{" +
                     $"\"memoryMb\":{memoryMb}," +
-                    $"\"memoryBytes\":{memoryBytes}," +
-                    $"\"totalSystemBytes\":{totalSystemBytes}," +
-                    $"\"freeSystemBytes\":{freeSystemBytes}," +
-                    $"\"uptimeSeconds\":{uptimeSec}," +
-                    $"\"playerCount\":{playerCount}," +
-                    $"\"maxPlayers\":{maxPlayers}," +
-                    $"\"port\":{port}," +
-                    $"\"tps\":{Math.Round(tps, 1)}" +
+                    $"\"memoryBytes\":{proc.MemoryBytes}," +
+                    $"\"totalSystemBytes\":{proc.TotalSystemBytes}," +
+                    $"\"freeSystemBytes\":{proc.FreeSystemBytes}," +
+                    $"\"uptimeSeconds\":{proc.UptimeSec}," +
+                    $"\"playerCount\":{mainSnap.PlayerCount}," +
+                    $"\"maxPlayers\":{mainSnap.MaxPlayers}," +
+                    $"\"port\":{mainSnap.Port}," +
+                    $"\"tps\":{Math.Round(mainSnap.Tps, 1).ToString(System.Globalization.CultureInfo.InvariantCulture)}" +
                 "}";
             }
             catch (Exception ex)
@@ -1494,29 +1677,37 @@ namespace ScpWebPanelPlugin
             return tcs.Task;
         }
 
-        private string GetPlayersJson()
+        private static string SerializePlayers(PlayerSnapshot[] players)
         {
             try
             {
-                var players = new List<string>();
-                foreach (var player in Player.List)
+                var sb = new StringBuilder("[", Math.Max(32, players.Length * 128));
+                bool first = true;
+                for (int i = 0; i < players.Length; i++)
                 {
-                    if (player == null) continue;
-
-                    string rawId = player.UserId ?? "";
-                    string rawName = player.Nickname ?? "";
+                    var p = players[i];
+                    string rawId = p.Id;
+                    string rawName = p.Name;
                     if (string.IsNullOrWhiteSpace(rawId) || rawId == "Unknown" || string.IsNullOrWhiteSpace(rawName) || rawName == "(null)" || rawName == "null") continue;
-                    if (rawName.ToLower().Contains("dedicated") || rawId.ToLower().StartsWith("dedicated")) continue;
+                    if (rawName.IndexOf("dedicated", StringComparison.OrdinalIgnoreCase) >= 0 || rawId.StartsWith("dedicated", StringComparison.OrdinalIgnoreCase)) continue;
 
-                    string id = EscapeJson(rawId);
-                    string name = EscapeJson(rawName);
-                    string role = EscapeJson(player.Role.ToString() ?? "");
-                    float hp = player.Health;
-                    bool isMuted = player.IsMuted;
+                    if (!first) sb.Append(',');
+                    first = false;
 
-                    players.Add($"{{\"id\":\"{id}\",\"name\":\"{name}\",\"role\":\"{role}\",\"hp\":{hp},\"isMuted\":{(isMuted ? "true" : "false")}}}");
+                    sb.Append("{\"id\":\"");
+                    sb.Append(EscapeJson(rawId));
+                    sb.Append("\",\"name\":\"");
+                    sb.Append(EscapeJson(rawName));
+                    sb.Append("\",\"role\":\"");
+                    sb.Append(EscapeJson(p.Role));
+                    sb.Append("\",\"hp\":");
+                    sb.Append(p.Hp.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                    sb.Append(",\"isMuted\":");
+                    sb.Append(p.IsMuted ? "true" : "false");
+                    sb.Append('}');
                 }
-                return "[" + string.Join(",", players) + "]";
+                sb.Append(']');
+                return sb.ToString();
             }
             catch (Exception ex)
             {
@@ -1530,7 +1721,7 @@ namespace ScpWebPanelPlugin
             if (string.IsNullOrEmpty(json) || string.IsNullOrEmpty(field)) return "";
             try
             {
-                // Fast path: find "field": "value"
+                // Fast path: find "field": "value" without any regex allocation
                 string keyPattern = $"\"{field}\"";
                 int keyIdx = json.IndexOf(keyPattern, StringComparison.Ordinal);
                 if (keyIdx != -1)
@@ -1597,13 +1788,6 @@ namespace ScpWebPanelPlugin
                     }
                 }
 
-                // Fallback regex for unconventional formatting
-                var match = Regex.Match(json, $"\"{Regex.Escape(field)}\"\\s*:\\s*\"([^\"]*)\"");
-                if (match.Success) return match.Groups[1].Value;
-
-                var matchNum = Regex.Match(json, $"\"{Regex.Escape(field)}\"\\s*:\\s*(-?\\d+)");
-                if (matchNum.Success) return matchNum.Groups[1].Value;
-
                 return "";
             }
             catch
@@ -1612,10 +1796,35 @@ namespace ScpWebPanelPlugin
             }
         }
 
+        private static readonly char[] CharactersToEscape = { '\\', '"', '\n', '\r', '\t', '\b', '\f' };
+
         private static string EscapeJson(string str)
         {
             if (string.IsNullOrEmpty(str)) return "";
-            return str.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\n", "\\n").Replace("\r", "\\r");
+            if (str.IndexOfAny(CharactersToEscape) == -1) return str;
+
+            var sb = new StringBuilder(str.Length + 16);
+            for (int i = 0; i < str.Length; i++)
+            {
+                char c = str[i];
+                switch (c)
+                {
+                    case '\\': sb.Append("\\\\"); break;
+                    case '"': sb.Append("\\\""); break;
+                    case '\n': sb.Append("\\n"); break;
+                    case '\r': sb.Append("\\r"); break;
+                    case '\t': sb.Append("\\t"); break;
+                    case '\b': sb.Append("\\b"); break;
+                    case '\f': sb.Append("\\f"); break;
+                    default:
+                        if (c < 32)
+                            sb.AppendFormat("\\u{0:X4}", (int)c);
+                        else
+                            sb.Append(c);
+                        break;
+                }
+            }
+            return sb.ToString();
         }
 
         private static string SanitizeConsoleArgument(string input, int maxLength = 120)
