@@ -16,7 +16,7 @@ namespace ScpWebPanelPlugin
         public override string Name => "WebPanelPlugin";
         public override string Description => "Web Panel Reverse WebSocket & Telemetry Client";
         public override string Author => "MHS";
-        public override Version Version => new Version(2, 2, 0);
+        public override Version Version => new Version(2, 2, 1);
         public override Version RequiredApiVersion => new Version(1, 0, 0);
 
         public PluginWebSocketClient WsClient { get; private set; }
@@ -26,7 +26,7 @@ namespace ScpWebPanelPlugin
         {
             try
             {
-                Logger.Info("WebPanelPlugin (v2.2.0 High-Performance SaaS Client) loading via LabAPI...");
+                Logger.Info("WebPanelPlugin (v2.2.1 High-Performance SaaS Client) loading via LabAPI...");
 
                 // Capture main thread synchronization context
                 _syncContext = SynchronizationContext.Current;

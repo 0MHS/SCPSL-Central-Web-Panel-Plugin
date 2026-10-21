@@ -184,6 +184,7 @@ namespace ScpWebPanelPlugin
                 else
                 {
                     // Multi-frame fallback for large payloads (e.g. plugin DLL uploads)
+                    const int MaxMessageBytes = 15 * 1024 * 1024; // 15 MB safety cap
                     using (var ms = new MemoryStream())
                     {
                         ms.Write(buffer, 0, result.Count);
@@ -191,6 +192,12 @@ namespace ScpWebPanelPlugin
                         {
                             result = await _ws.ReceiveAsync(new ArraySegment<byte>(buffer), token);
                             if (result.MessageType == WebSocketMessageType.Close) return;
+                            if (ms.Length + result.Count > MaxMessageBytes)
+                            {
+                                Logger.Warn("[PluginWS] Incoming multi-frame message exceeded 15 MB safety limit. Closing connection.");
+                                await _ws.CloseAsync(WebSocketCloseStatus.MessageTooBig, "Payload too large", token);
+                                return;
+                            }
                             ms.Write(buffer, 0, result.Count);
                         }
                         while (!result.EndOfMessage);
@@ -199,7 +206,9 @@ namespace ScpWebPanelPlugin
                     }
                 }
 
-                _ = ProcessIncomingMessageAsync(message);
+                // Offload RPC processing to ThreadPool so synchronous disk I/O never stalls ReceiveLoopAsync
+                string capturedMessage = message;
+                _ = Task.Run(() => ProcessIncomingMessageAsync(capturedMessage));
             }
         }
 
@@ -308,7 +317,7 @@ namespace ScpWebPanelPlugin
                         {
                             foreach (var p in Player.List)
                             {
-                                if (p != null && (p.UserId == targetId || p.UserId.StartsWith(targetId)))
+                                if (p != null && IsMatchingUserId(p.UserId, targetId))
                                 {
                                     p.Kick(reason);
                                     return true;
@@ -356,7 +365,7 @@ namespace ScpWebPanelPlugin
                                 // 1. Main-thread: Find online player, capture name and execute instant kick
                                 foreach (var p in Player.List)
                                 {
-                                    if (p != null && (p.UserId == formattedTargetId || p.UserId == targetId || p.UserId.StartsWith(targetId)))
+                                    if (p != null && (IsMatchingUserId(p.UserId, formattedTargetId) || IsMatchingUserId(p.UserId, targetId)))
                                     {
                                         if (!string.IsNullOrEmpty(p.Nickname)) playerName = SanitizeConsoleArgument(p.Nickname, 64);
                                         try { p.Kick(reason); } catch { }
@@ -444,7 +453,7 @@ namespace ScpWebPanelPlugin
                         {
                             foreach (var p in Player.List)
                             {
-                                if (p != null && (p.UserId == targetId || p.UserId.StartsWith(targetId)))
+                                if (p != null && IsMatchingUserId(p.UserId, targetId))
                                 {
                                     VoiceChat.VoiceChatMutes.IssueLocalMute(p.UserId, false);
                                     Logger.Info($"[PluginWS] Muted {p.Nickname} ({p.UserId}) for {durationMinutes}m. Reason: {reason}");
@@ -472,7 +481,7 @@ namespace ScpWebPanelPlugin
                         {
                             foreach (var p in Player.List)
                             {
-                                if (p != null && (p.UserId == targetId || p.UserId.StartsWith(targetId)))
+                                if (p != null && IsMatchingUserId(p.UserId, targetId))
                                 {
                                     VoiceChat.VoiceChatMutes.RevokeLocalMute(p.UserId, false);
                                     Logger.Info($"[PluginWS] Unmuted {p.Nickname} ({p.UserId})");
@@ -509,7 +518,7 @@ namespace ScpWebPanelPlugin
                                     // Player-specific broadcast (pbc)
                                     foreach (var p in Player.List)
                                     {
-                                        if (p != null && (p.UserId == targetId || p.UserId.StartsWith(targetId) || p.PlayerId.ToString() == targetId))
+                                        if (p != null && (IsMatchingUserId(p.UserId, targetId) || p.PlayerId.ToString() == targetId))
                                         {
                                             p.SendBroadcast(message, duration, Broadcast.BroadcastFlags.Normal, true);
                                             Logger.Info($"[PluginWS] Broadcast sent to {p.Nickname} ({p.UserId}): \"{message}\" ({duration}s)");
@@ -602,7 +611,7 @@ namespace ScpWebPanelPlugin
 
                                         foreach (var p in Player.List)
                                         {
-                                            if (p != null && (p.UserId == target || p.UserId.StartsWith(target) || p.PlayerId.ToString() == target))
+                                            if (p != null && (IsMatchingUserId(p.UserId, target) || p.PlayerId.ToString() == target))
                                             {
                                                 p.SendBroadcast(msg, duration, Broadcast.BroadcastFlags.Normal, true);
                                                 return $"Player broadcast sent to {p.Nickname} ({duration}s): {msg}";
@@ -923,23 +932,34 @@ namespace ScpWebPanelPlugin
                             var configsDir = LabApi.Loader.Features.Paths.PathManager.Configs;
                             if (configsDir != null && configsDir.Exists)
                             {
+                                string fullRoot = Path.GetFullPath(configsDir.FullName);
                                 int port = Server.Port;
                                 if (pluginName.Equals("LabAPI Permissions", StringComparison.OrdinalIgnoreCase) || pluginName.Equals("permissions", StringComparison.OrdinalIgnoreCase))
                                 {
-                                    string permFile = Path.Combine(configsDir.FullName, "permissions.yml");
-                                    if (File.Exists(permFile)) resolvedPath = permFile;
+                                    string permFile = Path.GetFullPath(Path.Combine(fullRoot, "permissions.yml"));
+                                    if (permFile.StartsWith(fullRoot + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase) && File.Exists(permFile))
+                                    {
+                                        resolvedPath = permFile;
+                                    }
                                 }
                                 else
                                 {
-                                    string portCfg = Path.Combine(configsDir.FullName, port.ToString(), pluginName, "config.yml");
-                                    if (File.Exists(portCfg))
+                                    string safeFolder = SanitizePluginFolderName(pluginName);
+                                    if (!string.IsNullOrEmpty(safeFolder))
                                     {
-                                        resolvedPath = portCfg;
-                                    }
-                                    else
-                                    {
-                                        string globalCfg = Path.Combine(configsDir.FullName, pluginName, "config.yml");
-                                        if (File.Exists(globalCfg)) resolvedPath = globalCfg;
+                                        string portCfg = Path.GetFullPath(Path.Combine(fullRoot, port.ToString(), safeFolder, "config.yml"));
+                                        if (portCfg.StartsWith(fullRoot + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase) && File.Exists(portCfg))
+                                        {
+                                            resolvedPath = portCfg;
+                                        }
+                                        else
+                                        {
+                                            string globalCfg = Path.GetFullPath(Path.Combine(fullRoot, safeFolder, "config.yml"));
+                                            if (globalCfg.StartsWith(fullRoot + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase) && File.Exists(globalCfg))
+                                            {
+                                                resolvedPath = globalCfg;
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -975,16 +995,30 @@ namespace ScpWebPanelPlugin
                             var configsDir = LabApi.Loader.Features.Paths.PathManager.Configs;
                             if (configsDir != null && configsDir.Exists)
                             {
+                                string fullRoot = Path.GetFullPath(configsDir.FullName);
                                 int port = Server.Port;
                                 if (pluginName.Equals("LabAPI Permissions", StringComparison.OrdinalIgnoreCase) || pluginName.Equals("permissions", StringComparison.OrdinalIgnoreCase))
                                 {
-                                    resolvedPath = Path.Combine(configsDir.FullName, "permissions.yml");
+                                    string permFile = Path.GetFullPath(Path.Combine(fullRoot, "permissions.yml"));
+                                    if (permFile.StartsWith(fullRoot + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+                                    {
+                                        resolvedPath = permFile;
+                                    }
                                 }
                                 else
                                 {
-                                    string portDir = Path.Combine(configsDir.FullName, port.ToString(), pluginName);
-                                    if (!Directory.Exists(portDir)) Directory.CreateDirectory(portDir);
-                                    resolvedPath = Path.Combine(portDir, "config.yml");
+                                    string safeFolder = SanitizePluginFolderName(pluginName);
+                                    if (string.IsNullOrEmpty(safeFolder))
+                                    {
+                                        await SendResponseAsync(reqId, false, "\"Invalid pluginName parameter\"");
+                                        return;
+                                    }
+                                    string portDir = Path.GetFullPath(Path.Combine(fullRoot, port.ToString(), safeFolder));
+                                    if (portDir.StartsWith(fullRoot + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+                                    {
+                                        if (!Directory.Exists(portDir)) Directory.CreateDirectory(portDir);
+                                        resolvedPath = Path.Combine(portDir, "config.yml");
+                                    }
                                 }
                             }
                         }
@@ -1807,6 +1841,17 @@ namespace ScpWebPanelPlugin
                                                     case 'n': sb.Append('\n'); break;
                                                     case 'r': sb.Append('\r'); break;
                                                     case 't': sb.Append('\t'); break;
+                                                    case 'u':
+                                                        if (i + 4 < len && ushort.TryParse(json.Substring(i + 1, 4), System.Globalization.NumberStyles.AllowHexSpecifier, System.Globalization.CultureInfo.InvariantCulture, out ushort hexCode))
+                                                        {
+                                                            sb.Append((char)hexCode);
+                                                            i += 4;
+                                                        }
+                                                        else
+                                                        {
+                                                            sb.Append('u');
+                                                        }
+                                                        break;
                                                     default: sb.Append(vc); break;
                                                 }
                                                 valEscaped = false;
@@ -1908,6 +1953,27 @@ namespace ScpWebPanelPlugin
         {
             if (string.IsNullOrEmpty(targetId)) return "";
             return Regex.Replace(targetId, @"[^a-zA-Z0-9@._-]", "");
+        }
+
+        private static bool IsMatchingUserId(string playerUserId, string targetId)
+        {
+            if (string.IsNullOrEmpty(playerUserId) || string.IsNullOrEmpty(targetId)) return false;
+            if (string.Equals(playerUserId, targetId, StringComparison.OrdinalIgnoreCase)) return true;
+            if (!targetId.Contains("@") && playerUserId.StartsWith(targetId + "@", StringComparison.OrdinalIgnoreCase)) return true;
+            return false;
+        }
+
+        private static string SanitizePluginFolderName(string pluginName)
+        {
+            if (string.IsNullOrWhiteSpace(pluginName)) return null;
+            string trimmed = pluginName.Trim();
+            if (trimmed.Contains("..") || trimmed.Contains("/") || trimmed.Contains("\\") || trimmed.Contains(":"))
+                return null;
+            if (trimmed.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0)
+                return null;
+            if (!string.Equals(Path.GetFileName(trimmed), trimmed, StringComparison.Ordinal))
+                return null;
+            return trimmed;
         }
     }
 }
