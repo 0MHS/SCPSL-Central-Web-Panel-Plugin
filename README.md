@@ -1,12 +1,15 @@
-# SCP:SL Web Panel — LabAPI Game Server Plugin (v2.1.2)
+# SCP:SL Web Panel — LabAPI Game Server Plugin (v2.2.1)
 
-[![Release](https://img.shields.io/badge/Release-v2.1.2-brightgreen.svg)](https://github.com/0MHS/SCPSL-Central-Web-Panel-Plugin/releases)
+[![Release](https://img.shields.io/badge/Release-v2.2.1-brightgreen.svg)](https://github.com/0MHS/SCPSL-Central-Web-Panel-Plugin/releases)
 [![Target](https://img.shields.io/badge/.NET%20Framework-4.8-blue.svg)](https://dotnet.microsoft.com/)
 [![Modding](https://img.shields.io/badge/Framework-LabAPI-orange.svg)](https://github.com/CedModV2/LabAPI)
 [![Status](https://img.shields.io/badge/Live%20Panel-Online-success.svg)](https://scpslwebpanel.zapto.org)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-Official LabAPI game server plugin and C# reference source for the **SCP: Secret Laboratory Central Web Panel** ([https://scpslwebpanel.zapto.org](https://scpslwebpanel.zapto.org)).
+> [!NOTE]
+> **Disclaimer & Non-Affiliation Notice**: This project is an independent community-developed open-source tool and is **NOT affiliated with, endorsed by, or sponsored by Northwood Studios**. *SCP: Secret Laboratory* and related game assets and marks are the property of Northwood Studios and the SCP Wiki community (licensed under CC BY-SA 3.0).
+
+Open-source LabAPI game server plugin and C# reference source for the **SCP: Secret Laboratory Central Web Panel** ([https://scpslwebpanel.zapto.org](https://scpslwebpanel.zapto.org)).
 
 This plugin establishes an outbound secure TLS Reverse WebSocket tunnel from your dedicated game server directly to the Central Web Panel, allowing real-time browser-based moderation, live console streaming, player management, and telemetry **with zero port-forwarding or firewall changes**.
 
