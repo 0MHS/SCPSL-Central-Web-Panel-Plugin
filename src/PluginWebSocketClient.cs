@@ -588,7 +588,9 @@ namespace ScpWebPanelPlugin
                                         }
 
                                         LabApi.Features.Wrappers.Server.SendBroadcast(msg, duration, Broadcast.BroadcastFlags.Normal, true);
-                                        return $"Broadcast sent to all players ({duration}s): {msg}";
+                                        string bcResponse = $"Broadcast sent to all players ({duration}s): {msg}";
+                                        _ = SendConsoleLogAsync(bcResponse);
+                                        return bcResponse;
                                     }
                                 }
                                 else if (lower.StartsWith("pbc ") || lower == "pbc")
@@ -614,10 +616,14 @@ namespace ScpWebPanelPlugin
                                             if (p != null && (IsMatchingUserId(p.UserId, target) || p.PlayerId.ToString() == target))
                                             {
                                                 p.SendBroadcast(msg, duration, Broadcast.BroadcastFlags.Normal, true);
-                                                return $"Player broadcast sent to {p.Nickname} ({duration}s): {msg}";
+                                                string pbcResponse = $"Player broadcast sent to {p.Nickname} ({duration}s): {msg}";
+                                                _ = SendConsoleLogAsync(pbcResponse);
+                                                return pbcResponse;
                                             }
                                         }
-                                        return $"Player '{target}' not found online.";
+                                        string notFoundMsg = $"Player '{target}' not found online.";
+                                        _ = SendConsoleLogAsync(notFoundMsg);
+                                        return notFoundMsg;
                                     }
                                 }
 
@@ -634,12 +640,14 @@ namespace ScpWebPanelPlugin
                                     !labResult.Contains("Command not found") &&
                                     !labResult.Contains("Command does not exist"))
                                 {
-                                    return labResult.Trim();
+                                    string trimmedLab = labResult.Trim();
+                                    _ = SendConsoleLogAsync(trimmedLab);
+                                    return trimmedLab;
                                 }
 
                                 // 3. Fallback: execute via ServerConsole (Game Console commands like roundrestart, etc.)
                                 ServerConsole.EnterCommand(trimmed);
-                                return string.IsNullOrWhiteSpace(labResult) ? $"[Server] Executed: {trimmed}" : labResult.Trim();
+                                return string.Empty;
                             }
                             catch (Exception ex)
                             {

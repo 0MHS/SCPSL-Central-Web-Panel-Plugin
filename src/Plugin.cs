@@ -43,12 +43,7 @@ namespace ScpWebPanelPlugin
                     Logger.Info("WebPanelPlugin round statistics reporting enabled.");
                 }
 
-                try
-                {
-                    ServerEvents.CommandExecuted += OnCommandExecuted;
-                    Logger.Info("WebPanelPlugin CommandExecuted event hooked.");
-                }
-                catch { }
+                // ServerEvents.CommandExecuted removed to avoid duplicate console echoes
 
                 // Register in-game player hooks
                 PlayerEvents.Left += OnPlayerLeft;
@@ -84,7 +79,6 @@ namespace ScpWebPanelPlugin
             {
                 ServerEvents.RoundStarted -= OnRoundStarted;
                 ServerEvents.RoundEnded -= OnRoundEnded;
-                ServerEvents.CommandExecuted -= OnCommandExecuted;
             }
             catch { }
 
@@ -380,20 +374,6 @@ namespace ScpWebPanelPlugin
             public string Name;
             public string UserId;
             public string Role;
-        }
-
-        private void OnCommandExecuted(CommandExecutedEventArgs ev)
-        {
-            try
-            {
-                if (WsClient == null || !WsClient.IsConnected || !WsClient.IsConsoleSubscribed) return;
-                string resp = ev?.Response;
-                if (!string.IsNullOrWhiteSpace(resp))
-                {
-                    _ = WsClient.SendConsoleLogAsync(resp);
-                }
-            }
-            catch { }
         }
 
         private static bool NeedsJsonEscape(string str)
