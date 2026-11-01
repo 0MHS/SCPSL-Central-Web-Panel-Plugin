@@ -7,3 +7,21 @@ obj/
 .vs/
 .idea/
 *.log
+
+# Secrets & Environment Variables (Pre-Launch Security Check 02 & 11)
+.env
+.env.*
+*.env
+*.key
+*.pem
+*.pfx
+*.crt
+*.cert
+*.secret
+
+# Backup & Temporary files
+*.bak
+*.old
+*.swp
+*.tmp
+*~

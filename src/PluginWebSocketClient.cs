@@ -150,13 +150,28 @@ namespace ScpWebPanelPlugin
             string serverName = EscapeJson(string.IsNullOrWhiteSpace(_config.ServerName) ? $"Server #{Server.Port}" : _config.ServerName);
             int port = Server.Port;
 
-            string authPayload = "{" +
-                "\"type\":\"auth\"," +
-                $"\"token\":\"{EscapeJson(_config.ServerToken)}\"," +
-                $"\"serverName\":\"{serverName}\"," +
-                $"\"port\":{port}," +
-                $"\"version\":\"2.2.0\"" +
-            "}";
+                string currentVer = "2.2.2";
+                try
+                {
+                    if (WebPanelPlugin.Instance != null && WebPanelPlugin.Instance.Version != null)
+                    {
+                        currentVer = WebPanelPlugin.Instance.Version.ToString();
+                    }
+                    else
+                    {
+                        var selfVer = System.Reflection.Assembly.GetExecutingAssembly().GetName().Version;
+                        if (selfVer != null && selfVer.Major > 1) currentVer = selfVer.ToString();
+                    }
+                }
+                catch { }
+
+                string authPayload = "{" +
+                    "\"type\":\"auth\"," +
+                    $"\"token\":\"{EscapeJson(_config.ServerToken)}\"," +
+                    $"\"serverName\":\"{serverName}\"," +
+                    $"\"port\":{port}," +
+                    $"\"version\":\"{EscapeJson(currentVer)}\"" +
+                "}";
 
             await SendRawAsync(authPayload, token);
         }
@@ -254,6 +269,7 @@ namespace ScpWebPanelPlugin
             catch (Exception ex)
             {
                 Logger.Error($"[PluginWS] Error processing incoming payload: {ex.Message}");
+                _ = SendPluginErrorAsync("ProcessIncomingMessageAsync", ex);
             }
         }
 
@@ -546,6 +562,489 @@ namespace ScpWebPanelPlugin
                         break;
                     }
 
+                                        case "get_player_inventory":
+                    {
+                        string targetId = SanitizeTargetId(ExtractField(rawMessage, "targetId"));
+                        if (string.IsNullOrEmpty(targetId))
+                        {
+                            await SendResponseAsync(reqId, false, "\"Target ID is required\"");
+                            return;
+                        }
+
+                        string resultJson = await RunOnMainThreadAsync(() =>
+                        {
+                            try
+                            {
+                                Player target = null;
+                                foreach (var p in Player.List)
+                                {
+                                    if (p != null && (IsMatchingUserId(p.UserId, targetId) || p.PlayerId.ToString() == targetId))
+                                    {
+                                        target = p;
+                                        break;
+                                    }
+                                }
+
+                                if (target == null)
+                                    return "{\"error\":\"Player not found online\"}";
+
+                                string roleStr = target.Role.ToString();
+                                bool isAlive = target.IsAlive;
+                                bool isSpectator = !isAlive || roleStr.IndexOf("spectator", StringComparison.OrdinalIgnoreCase) >= 0 || roleStr.IndexOf("overwatch", StringComparison.OrdinalIgnoreCase) >= 0;
+
+                                var sb = new StringBuilder("{", 1024);
+                                sb.Append("\"success\":true,");
+                                sb.Append("\"playerId\":\"").Append(EscapeJson(target.UserId ?? "")).Append("\",");
+                                sb.Append("\"nickname\":\"").Append(EscapeJson(target.Nickname ?? "")).Append("\",");
+                                sb.Append("\"role\":\"").Append(EscapeJson(roleStr)).Append("\",");
+                                sb.Append("\"isAlive\":").Append(isAlive ? "true" : "false").Append(",");
+                                sb.Append("\"isSpectator\":").Append(isSpectator ? "true" : "false").Append(",");
+
+                                // Inventory items
+                                sb.Append("\"items\":[");
+                                bool firstItem = true;
+                                if (isAlive && target.Items != null)
+                                {
+                                    foreach (var item in target.Items)
+                                    {
+                                        if (item == null) continue;
+                                        if (!firstItem) sb.Append(',');
+                                        firstItem = false;
+
+                                        string itemType = item.Type.ToString();
+                                        ushort serial = item.Serial;
+                                        bool isGun = item is FirearmItem;
+                                        string ammoType = "";
+                                        int curAmmo = 0;
+                                        int maxAmmo = 0;
+
+                                        if (isGun)
+                                        {
+                                            var firearm = item as FirearmItem;
+                                            ammoType = firearm.AmmoType.ToString();
+                                            curAmmo = firearm.StoredAmmo;
+                                            maxAmmo = firearm.MaxAmmo;
+                                        }
+
+                                        sb.Append("{\"serial\":").Append(serial).Append(",");
+                                        sb.Append("\"type\":\"").Append(EscapeJson(itemType)).Append("\",");
+                                        sb.Append("\"isGun\":").Append(isGun ? "true" : "false").Append(",");
+                                        sb.Append("\"ammoType\":\"").Append(EscapeJson(ammoType)).Append("\",");
+                                        sb.Append("\"curAmmo\":").Append(curAmmo).Append(",");
+                                        sb.Append("\"maxAmmo\":").Append(maxAmmo).Append("}");
+                                    }
+                                }
+                                sb.Append("],");
+
+                                // Reserve Ammo
+                                sb.Append("\"ammo\":{");
+                                bool firstAmmo = true;
+                                if (isAlive && target.Ammo != null)
+                                {
+                                    foreach (var kvp in target.Ammo)
+                                    {
+                                        if (!firstAmmo) sb.Append(',');
+                                        firstAmmo = false;
+                                        sb.Append("\"").Append(EscapeJson(kvp.Key.ToString())).Append("\":").Append(kvp.Value);
+                                    }
+                                }
+                                sb.Append("},");
+
+                                // Active Status Effects
+                                sb.Append("\"activeEffects\":[");
+                                bool firstEffect = true;
+                                if (isAlive && target.ReferenceHub != null && target.ReferenceHub.playerEffectsController != null)
+                                {
+                                    var allEffects = target.ReferenceHub.playerEffectsController.AllEffects;
+                                    if (allEffects != null)
+                                    {
+                                        foreach (var eff in allEffects)
+                                        {
+                                            if (eff != null && eff.IsEnabled)
+                                            {
+                                                if (!firstEffect) sb.Append(',');
+                                                firstEffect = false;
+                                                string effName = eff.GetType().Name;
+                                                byte intensity = eff.Intensity;
+                                                float duration = eff.Duration;
+                                                float timeLeft = eff.TimeLeft;
+
+                                                sb.Append("{\"name\":\"").Append(EscapeJson(effName)).Append("\",");
+                                                sb.Append("\"intensity\":").Append(intensity).Append(",");
+                                                sb.Append("\"duration\":").Append(Math.Round(duration, 1)).Append(",");
+                                                sb.Append("\"timeLeft\":").Append(Math.Round(timeLeft, 1)).Append("}");
+                                            }
+                                        }
+                                    }
+                                }
+                                sb.Append("]}");
+
+                                return sb.ToString();
+                            }
+                            catch (Exception ex)
+                            {
+                                Logger.Error($"[PluginWS] get_player_inventory exception: {ex}");
+                                return "{\"error\":\"" + EscapeJson(ex.Message) + "\"}";
+                            }
+                        });
+
+                        bool isSuccess = !resultJson.StartsWith("{\"error\"");
+                        await SendResponseAsync(reqId, isSuccess, resultJson, isRawJson: true);
+                        break;
+                    }
+
+                    case "give_item":
+                    {
+                        string targetId = SanitizeTargetId(ExtractField(rawMessage, "targetId"));
+                        string itemTypeStr = ExtractField(rawMessage, "itemType");
+
+                        if (string.IsNullOrEmpty(targetId) || string.IsNullOrEmpty(itemTypeStr))
+                        {
+                            await SendResponseAsync(reqId, false, "\"Target ID and ItemType are required\"");
+                            return;
+                        }
+
+                        if (!Enum.TryParse(itemTypeStr, true, out ItemType itemType))
+                        {
+                            await SendResponseAsync(reqId, false, "\"Invalid ItemType\"");
+                            return;
+                        }
+
+                        string resultJson = await RunOnMainThreadAsync(() =>
+                        {
+                            try
+                            {
+                                Player target = null;
+                                foreach (var p in Player.List)
+                                {
+                                    if (p != null && (IsMatchingUserId(p.UserId, targetId) || p.PlayerId.ToString() == targetId))
+                                    {
+                                        target = p;
+                                        break;
+                                    }
+                                }
+
+                                if (target == null) return "{\"error\":\"Player not found online\"}";
+                                if (!target.IsAlive) return "{\"error\":\"Cannot give item to dead player/spectator\"}";
+                                if (target.IsInventoryFull) return "{\"error\":\"Player inventory is full (max 8 slots)\"}";
+
+                                var added = target.AddItem(itemType);
+                                if (added != null)
+                                {
+                                    Logger.Info($"[PluginWS] Gave item {itemType} to {target.Nickname} ({target.UserId})");
+                                    return "{\"success\":true,\"itemSerial\":" + added.Serial + "}";
+                                }
+                                return "{\"error\":\"Failed to give item\"}";
+                            }
+                            catch (Exception ex)
+                            {
+                                Logger.Error($"[PluginWS] give_item exception: {ex}");
+                                return "{\"error\":\"" + EscapeJson(ex.Message) + "\"}";
+                            }
+                        });
+
+                        bool isSuccess = !resultJson.StartsWith("{\"error\"");
+                        await SendResponseAsync(reqId, isSuccess, resultJson, isRawJson: true);
+                        break;
+                    }
+
+                    case "remove_item":
+                    {
+                        string targetId = SanitizeTargetId(ExtractField(rawMessage, "targetId"));
+                        string serialStr = ExtractField(rawMessage, "serial");
+
+                        if (string.IsNullOrEmpty(targetId) || !ushort.TryParse(serialStr, out ushort serial))
+                        {
+                            await SendResponseAsync(reqId, false, "\"Target ID and valid Serial are required\"");
+                            return;
+                        }
+
+                        string resultJson = await RunOnMainThreadAsync(() =>
+                        {
+                            try
+                            {
+                                Player target = null;
+                                foreach (var p in Player.List)
+                                {
+                                    if (p != null && (IsMatchingUserId(p.UserId, targetId) || p.PlayerId.ToString() == targetId))
+                                    {
+                                        target = p;
+                                        break;
+                                    }
+                                }
+
+                                if (target == null) return "{\"error\":\"Player not found online\"}";
+                                if (target.Inventory == null) return "{\"error\":\"Player has no inventory\"}";
+
+                                if (target.Inventory.UserInventory.Items.TryGetValue(serial, out var itemBase))
+                                {
+                                    target.RemoveItem(itemBase);
+                                    Logger.Info($"[PluginWS] Removed item {serial} ({itemBase.ItemTypeId}) from {target.Nickname} ({target.UserId})");
+                                    return "{\"success\":true}";
+                                }
+                                return "{\"error\":\"Item serial not found in player inventory\"}";
+                            }
+                            catch (Exception ex)
+                            {
+                                Logger.Error($"[PluginWS] remove_item exception: {ex}");
+                                return "{\"error\":\"" + EscapeJson(ex.Message) + "\"}";
+                            }
+                        });
+
+                        bool isSuccess = !resultJson.StartsWith("{\"error\"");
+                        await SendResponseAsync(reqId, isSuccess, resultJson, isRawJson: true);
+                        break;
+                    }
+
+                    case "give_ammo":
+                    {
+                        string targetId = SanitizeTargetId(ExtractField(rawMessage, "targetId"));
+                        string ammoTypeStr = ExtractField(rawMessage, "ammoType");
+                        string amountStr = ExtractField(rawMessage, "amount");
+                        ushort amount = 30;
+                        if (ushort.TryParse(amountStr, out ushort a) && a > 0) amount = a;
+
+                        if (string.IsNullOrEmpty(targetId) || string.IsNullOrEmpty(ammoTypeStr))
+                        {
+                            await SendResponseAsync(reqId, false, "\"Target ID and AmmoType are required\"");
+                            return;
+                        }
+
+                        if (!Enum.TryParse(ammoTypeStr, true, out ItemType ammoType))
+                        {
+                            await SendResponseAsync(reqId, false, "\"Invalid AmmoType\"");
+                            return;
+                        }
+
+                        string resultJson = await RunOnMainThreadAsync(() =>
+                        {
+                            try
+                            {
+                                Player target = null;
+                                foreach (var p in Player.List)
+                                {
+                                    if (p != null && (IsMatchingUserId(p.UserId, targetId) || p.PlayerId.ToString() == targetId))
+                                    {
+                                        target = p;
+                                        break;
+                                    }
+                                }
+
+                                if (target == null) return "{\"error\":\"Player not found online\"}";
+                                if (!target.IsAlive) return "{\"error\":\"Cannot give ammo to dead player/spectator\"}";
+
+                                target.AddAmmo(ammoType, amount);
+                                Logger.Info($"[PluginWS] Added {amount} reserve {ammoType} ammo to {target.Nickname} ({target.UserId})");
+                                return "{\"success\":true}";
+                            }
+                            catch (Exception ex)
+                            {
+                                Logger.Error($"[PluginWS] give_ammo exception: {ex}");
+                                return "{\"error\":\"" + EscapeJson(ex.Message) + "\"}";
+                            }
+                        });
+
+                        bool isSuccess = !resultJson.StartsWith("{\"error\"");
+                        await SendResponseAsync(reqId, isSuccess, resultJson, isRawJson: true);
+                        break;
+                    }
+
+                    case "clear_ammo":
+                    {
+                        string targetId = SanitizeTargetId(ExtractField(rawMessage, "targetId"));
+                        if (string.IsNullOrEmpty(targetId))
+                        {
+                            await SendResponseAsync(reqId, false, "\"Target ID is required\"");
+                            return;
+                        }
+
+                        string resultJson = await RunOnMainThreadAsync(() =>
+                        {
+                            try
+                            {
+                                Player target = null;
+                                foreach (var p in Player.List)
+                                {
+                                    if (p != null && (IsMatchingUserId(p.UserId, targetId) || p.PlayerId.ToString() == targetId))
+                                    {
+                                        target = p;
+                                        break;
+                                    }
+                                }
+
+                                if (target == null) return "{\"error\":\"Player not found online\"}";
+                                target.ClearAmmo();
+                                Logger.Info($"[PluginWS] Cleared all reserve ammo for {target.Nickname} ({target.UserId})");
+                                return "{\"success\":true}";
+                            }
+                            catch (Exception ex)
+                            {
+                                Logger.Error($"[PluginWS] clear_ammo exception: {ex}");
+                                return "{\"error\":\"" + EscapeJson(ex.Message) + "\"}";
+                            }
+                        });
+
+                        bool isSuccess = !resultJson.StartsWith("{\"error\"");
+                        await SendResponseAsync(reqId, isSuccess, resultJson, isRawJson: true);
+                        break;
+                    }
+
+                    case "clear_inventory":
+                    {
+                        string targetId = SanitizeTargetId(ExtractField(rawMessage, "targetId"));
+                        if (string.IsNullOrEmpty(targetId))
+                        {
+                            await SendResponseAsync(reqId, false, "\"Target ID is required\"");
+                            return;
+                        }
+
+                        string resultJson = await RunOnMainThreadAsync(() =>
+                        {
+                            try
+                            {
+                                Player target = null;
+                                foreach (var p in Player.List)
+                                {
+                                    if (p != null && (IsMatchingUserId(p.UserId, targetId) || p.PlayerId.ToString() == targetId))
+                                    {
+                                        target = p;
+                                        break;
+                                    }
+                                }
+
+                                if (target == null) return "{\"error\":\"Player not found online\"}";
+                                target.ClearItems();
+                                Logger.Info($"[PluginWS] Cleared all items for {target.Nickname} ({target.UserId})");
+                                return "{\"success\":true}";
+                            }
+                            catch (Exception ex)
+                            {
+                                Logger.Error($"[PluginWS] clear_inventory exception: {ex}");
+                                return "{\"error\":\"" + EscapeJson(ex.Message) + "\"}";
+                            }
+                        });
+
+                        bool isSuccess = !resultJson.StartsWith("{\"error\"");
+                        await SendResponseAsync(reqId, isSuccess, resultJson, isRawJson: true);
+                        break;
+                    }
+
+                    case "apply_status_effect":
+                    {
+                        string targetId = SanitizeTargetId(ExtractField(rawMessage, "targetId"));
+                        string effectName = ExtractField(rawMessage, "effectName");
+                        string durationStr = ExtractField(rawMessage, "duration");
+                        string intensityStr = ExtractField(rawMessage, "intensity");
+
+                        float duration = 10f;
+                        if (float.TryParse(durationStr, out float dur)) duration = dur;
+
+                        byte intensity = 1;
+                        if (byte.TryParse(intensityStr, out byte intens) && intens > 0) intensity = intens;
+
+                        if (string.IsNullOrEmpty(targetId) || string.IsNullOrEmpty(effectName))
+                        {
+                            await SendResponseAsync(reqId, false, "\"Target ID and Effect Name are required\"");
+                            return;
+                        }
+
+                        string resultJson = await RunOnMainThreadAsync(() =>
+                        {
+                            try
+                            {
+                                Player target = null;
+                                foreach (var p in Player.List)
+                                {
+                                    if (p != null && (IsMatchingUserId(p.UserId, targetId) || p.PlayerId.ToString() == targetId))
+                                    {
+                                        target = p;
+                                        break;
+                                    }
+                                }
+
+                                if (target == null) return "{\"error\":\"Player not found online\"}";
+                                if (!target.IsAlive) return "{\"error\":\"Cannot apply effect to dead player/spectator\"}";
+
+                                if (target.ReferenceHub != null && target.ReferenceHub.playerEffectsController != null)
+                                {
+                                    var eff = target.ReferenceHub.playerEffectsController.ChangeState(effectName, intensity, duration, false);
+                                    if (eff != null)
+                                    {
+                                        Logger.Info($"[PluginWS] Applied effect {effectName} (intensity {intensity}, {duration}s) to {target.Nickname} ({target.UserId})");
+                                        return "{\"success\":true}";
+                                    }
+                                }
+                                return "{\"error\":\"Effect name not found or failed to apply\"}";
+                            }
+                            catch (Exception ex)
+                            {
+                                Logger.Error($"[PluginWS] apply_status_effect exception: {ex}");
+                                return "{\"error\":\"" + EscapeJson(ex.Message) + "\"}";
+                            }
+                        });
+
+                        bool isSuccess = !resultJson.StartsWith("{\"error\"");
+                        await SendResponseAsync(reqId, isSuccess, resultJson, isRawJson: true);
+                        break;
+                    }
+
+                    case "disable_status_effect":
+                    {
+                        string targetId = SanitizeTargetId(ExtractField(rawMessage, "targetId"));
+                        string effectName = ExtractField(rawMessage, "effectName");
+
+                        if (string.IsNullOrEmpty(targetId) || string.IsNullOrEmpty(effectName))
+                        {
+                            await SendResponseAsync(reqId, false, "\"Target ID and Effect Name are required\"");
+                            return;
+                        }
+
+                        string resultJson = await RunOnMainThreadAsync(() =>
+                        {
+                            try
+                            {
+                                Player target = null;
+                                foreach (var p in Player.List)
+                                {
+                                    if (p != null && (IsMatchingUserId(p.UserId, targetId) || p.PlayerId.ToString() == targetId))
+                                    {
+                                        target = p;
+                                        break;
+                                    }
+                                }
+
+                                if (target == null) return "{\"error\":\"Player not found online\"}";
+
+                                if (effectName.Equals("ALL", StringComparison.OrdinalIgnoreCase))
+                                {
+                                    target.DisableAllEffects();
+                                    Logger.Info($"[PluginWS] Disabled all effects on {target.Nickname} ({target.UserId})");
+                                    return "{\"success\":true}";
+                                }
+
+                                if (target.ReferenceHub != null && target.ReferenceHub.playerEffectsController != null)
+                                {
+                                    if (target.ReferenceHub.playerEffectsController.TryGetEffect(effectName, out var eff))
+                                    {
+                                        eff.ServerDisable();
+                                        Logger.Info($"[PluginWS] Disabled effect {effectName} on {target.Nickname} ({target.UserId})");
+                                        return "{\"success\":true}";
+                                    }
+                                }
+                                return "{\"error\":\"Effect not found on player\"}";
+                            }
+                            catch (Exception ex)
+                            {
+                                Logger.Error($"[PluginWS] disable_status_effect exception: {ex}");
+                                return "{\"error\":\"" + EscapeJson(ex.Message) + "\"}";
+                            }
+                        });
+
+                        bool isSuccess = !resultJson.StartsWith("{\"error\"");
+                        await SendResponseAsync(reqId, isSuccess, resultJson, isRawJson: true);
+                        break;
+                    }
+
                     case "command":
                     {
                         string cmd = ExtractField(rawMessage, "command");
@@ -815,6 +1314,104 @@ namespace ScpWebPanelPlugin
                         catch (Exception ex)
                         {
                             Logger.Error($"[PluginWS] Failed to save uploaded plugin: {ex.Message}");
+                            await SendResponseAsync(reqId, false, $"\"{EscapeJson(ex.Message)}\"");
+                        }
+                        break;
+                    }
+
+                    case "update_panel_plugin":
+                    {
+                        string b64 = ExtractField(rawMessage, "data");
+                        string targetVersion = ExtractField(rawMessage, "version");
+
+                        if (string.IsNullOrWhiteSpace(b64))
+                        {
+                            await SendResponseAsync(reqId, false, "\"Binary plugin data is required\"");
+                            return;
+                        }
+
+                        try
+                        {
+                            byte[] fileBytes = Convert.FromBase64String(b64);
+                            if (fileBytes.Length < 1024)
+                            {
+                                await SendResponseAsync(reqId, false, "\"Invalid plugin binary size\"");
+                                return;
+                            }
+
+                            // 1. Resolve running assembly location
+                            string executingPath = null;
+                            try
+                            {
+                                executingPath = System.Reflection.Assembly.GetExecutingAssembly().Location;
+                            }
+                            catch { }
+
+                            // 2. Resolve target directories
+                            string pluginsDir = LabApi.Loader.Features.Paths.PathManager.Plugins != null
+                                ? LabApi.Loader.Features.Paths.PathManager.Plugins.FullName
+                                : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "SCP Secret Laboratory", "PluginAPI", "plugins");
+
+                            string globalDir = Path.Combine(pluginsDir, "global");
+                            string defaultGlobalPath = Path.Combine(globalDir, "ScpWebPanelPlugin.dll");
+                            string defaultPluginPath = Path.Combine(pluginsDir, "ScpWebPanelPlugin.dll");
+
+                            var pathsToUpdate = new System.Collections.Generic.HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+                            if (!string.IsNullOrWhiteSpace(executingPath) && File.Exists(executingPath))
+                            {
+                                pathsToUpdate.Add(executingPath);
+                            }
+
+                            if (Directory.Exists(globalDir))
+                            {
+                                pathsToUpdate.Add(defaultGlobalPath);
+                            }
+                            else if (File.Exists(defaultPluginPath))
+                            {
+                                pathsToUpdate.Add(defaultPluginPath);
+                            }
+
+                            if (pathsToUpdate.Count == 0)
+                            {
+                                if (!Directory.Exists(globalDir)) Directory.CreateDirectory(globalDir);
+                                pathsToUpdate.Add(defaultGlobalPath);
+                            }
+
+                            int updatedCount = 0;
+                            foreach (string targetPath in pathsToUpdate)
+                            {
+                                string targetDir = Path.GetDirectoryName(targetPath);
+                                if (!Directory.Exists(targetDir)) Directory.CreateDirectory(targetDir);
+
+                                string tmpPath = targetPath + ".tmp";
+                                string bakPath = targetPath + ".bak";
+
+                                File.WriteAllBytes(tmpPath, fileBytes);
+                                try
+                                {
+                                    if (File.Exists(targetPath))
+                                    {
+                                        try { if (File.Exists(bakPath)) File.Delete(bakPath); } catch { }
+                                        try { File.Move(targetPath, bakPath); } catch { File.Delete(targetPath); }
+                                    }
+                                    File.Move(tmpPath, targetPath);
+                                }
+                                catch
+                                {
+                                    // Fallback to direct write if move locked
+                                    File.WriteAllBytes(targetPath, fileBytes);
+                                    try { if (File.Exists(tmpPath)) File.Delete(tmpPath); } catch { }
+                                }
+                                updatedCount++;
+                                Logger.Info($"[PluginWS] Panel Plugin binary updated at: {targetPath} ({fileBytes.Length} bytes)");
+                            }
+
+                            await SendResponseAsync(reqId, true, $"{{\"success\":true,\"version\":\"{EscapeJson(targetVersion)}\",\"updatedFiles\":{updatedCount},\"requiresRestart\":true}}", isRawJson: true);
+                        }
+                        catch (Exception ex)
+                        {
+                            Logger.Error($"[PluginWS] Failed to self-update panel plugin: {ex.Message}");
                             await SendResponseAsync(reqId, false, $"\"{EscapeJson(ex.Message)}\"");
                         }
                         break;
@@ -1315,6 +1912,29 @@ namespace ScpWebPanelPlugin
             return Task.CompletedTask;
         }
 
+        public Task SendPluginErrorAsync(string action, Exception ex, string metaJson = null)
+        {
+            try
+            {
+                if (!IsConnected) return Task.CompletedTask;
+                string errMsg = EscapeJson(ex?.Message ?? "Unknown Exception");
+                string stack = EscapeJson(ex?.StackTrace ?? "");
+                string safeAction = EscapeJson(action ?? "runtime_exception");
+
+                string payload = "{" +
+                    "\"type\":\"plugin_error\"," +
+                    $"\"action\":\"{safeAction}\"," +
+                    $"\"error\":\"{errMsg}\"," +
+                    $"\"stack\":\"{stack}\"" +
+                    (string.IsNullOrEmpty(metaJson) ? "" : $",\"meta\":{metaJson}") +
+                "}";
+
+                EnqueuePriority(payload);
+            }
+            catch { }
+            return Task.CompletedTask;
+        }
+
         public Task SendEventAsync(string eventName, string jsonPayload)
         {
             if (!IsConnected) return Task.CompletedTask;
@@ -1738,7 +2358,11 @@ namespace ScpWebPanelPlugin
             _syncContext.Post(_ =>
             {
                 try { tcs.SetResult(func()); }
-                catch (Exception ex) { tcs.SetException(ex); }
+                catch (Exception ex)
+                {
+                    _ = SendPluginErrorAsync("MainThreadExecution", ex);
+                    tcs.SetException(ex);
+                }
             }, null);
             return tcs.Task;
         }

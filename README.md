@@ -1,6 +1,6 @@
-# SCP:SL Web Panel — LabAPI Game Server Plugin (v2.2.1)
+# SCP:SL Central Web Panel — LabAPI Game Server Plugin (v2.2.2)
 
-[![Release](https://img.shields.io/badge/Release-v2.2.1-brightgreen.svg)](https://github.com/0MHS/SCPSL-Central-Web-Panel-Plugin/releases)
+[![Release](https://img.shields.io/badge/Release-v2.2.2-brightgreen.svg)](https://github.com/0MHS/SCPSL-Central-Web-Panel-Plugin/releases)
 [![Target](https://img.shields.io/badge/.NET%20Framework-4.8-blue.svg)](https://dotnet.microsoft.com/)
 [![Modding](https://img.shields.io/badge/Framework-LabAPI-orange.svg)](https://github.com/CedModV2/LabAPI)
 [![Status](https://img.shields.io/badge/Live%20Panel-Online-success.svg)](https://scpslwebpanel.zapto.org)
@@ -9,109 +9,92 @@
 > [!NOTE]
 > **Disclaimer & Non-Affiliation Notice**: This project is an independent community-developed open-source tool and is **NOT affiliated with, endorsed by, or sponsored by Northwood Studios**. *SCP: Secret Laboratory* and related game assets and marks are the property of Northwood Studios and the SCP Wiki community (licensed under CC BY-SA 3.0).
 
-Open-source LabAPI game server plugin and C# reference source for the **SCP: Secret Laboratory Central Web Panel** ([https://scpslwebpanel.zapto.org](https://scpslwebpanel.zapto.org)).
+Modern, zero-configuration cloud administrative, moderation, and telemetry web panel for **SCP: Secret Laboratory** dedicated servers (powered by **LabAPI**). 
 
-This plugin establishes an outbound secure TLS Reverse WebSocket tunnel from your dedicated game server directly to the Central Web Panel, allowing real-time browser-based moderation, live console streaming, player management, and telemetry **with zero port-forwarding or firewall changes**.
+Connect your game server to the central panel ([https://scpslwebpanel.zapto.org](https://scpslwebpanel.zapto.org)) simply by dropping `ScpWebPanelPlugin.dll` into your plugins folder and pasting your unique token.
 
 ![SCP:SL Central Web Panel Dashboard](docs/img/dashboard.png)
 
 ---
 
-## Overview
+## ⚡ Key Highlights & Server Owner Benefits
 
-The SCP:SL Central Web Panel transforms dedicated server administration into a unified, zero-configuration cloud experience:
-- **Zero Inbound Port Forwarding**: The plugin initiates an outbound TLS WebSocket (`ClientWebSocket`) to `wss://scpslwebpanel.zapto.org/ws/plugin`. No public ports or firewall changes are required on your host.
-- **Real-Time Memory and Process Telemetry**: Monitor server RAM allocation, CPU usage, tickrate stability, and process status with sub-second responsiveness.
-- **Quick Action Controls**: Execute instant server reloads, configuration refreshes, and graceful restarts directly from the interface.
-- **Live Tunnel Connectivity**: Persistent heartbeat monitoring with automatic exponential backoff reconnection ensures unbroken communication between the game server and web dashboard.
-
----
-
-## Comprehensive Feature Matrix
-
-### Telemetry and Live Server Dashboard
-The central dashboard provides operators with instant operational visibility:
-- **System Metrics**: Live tracking of RAM allocation, process states, and dedicated server uptime.
-- **Roster & Activity**: Active player counts, spectator counts, and pending moderation tickets updated in real time.
-- **Facility Status**: Quick-action controls for immediate configuration reloads and server restarts without SSH or terminal access.
-
-### Match Telemetry and Round Analytics
-Monitor and review match results across rounds with detailed statistics:
-
-![Round Statistics and Analytics](docs/img/round-statistics.png)
-
-- **Post-Round Event Capture**: Automated capture of round start, round end, match duration, and total player participation.
-- **Winning Faction Distribution**: Statistical breakdown of winning factions, including SCP, MTF / Facility Guard, and Class-D / Chaos Insurgency victories.
-- **Automated Round Logs**: Full timeline logging of critical match milestones, casualty counts, and objective outcomes.
-
-### Steam Intelligence and Teaming Detection
-Integrated player profile analytics enhance investigative capabilities:
-- **Playtime Detection**: Extracts and analyzes lifetime SCP:SL hours on record from player Steam accounts.
-- **Profile Privacy Resolution**: Multi-layer scraper resolves public versus private profiles with browser headers and fallback parsing.
-- **Teaming and Collusion Detection**: Undirected graph connected components identify active mutual friend clusters, detecting unauthorized teaming and cross-teaming in progress.
-
-### Moderation, Audit and Remote Administration
-Comprehensive tools for game server enforcement and player governance:
-- **In-Game Report Queue**: Real-time triage and processing of in-game F1 player reports with one-click actions.
-- **Cross-Server Audit Logging**: Immutable trail of administrative actions, staff interventions, and remote command records.
-- **Enforcement Suite**: Remote player kicks, customizable temporary bans with quick duration chips, and permanent bans with safety confirmation dialogs.
-- **Persistent Voice Mutes**: Automated voice chat mute tracking with auto-expiring timer persistence.
-- **File Synchronization**: Bidirectional synchronization with game configuration files, including `UserIdBans.txt` and `UserIDReservedSlots.txt`.
-
-### In-Game Console and Command Streaming
-Bidirectional terminal interface for operational command execution:
-- **Live Command Execution**: Send Remote Admin and game console commands directly over the WebSocket tunnel.
-- **Remote Broadcast Alerts**: Dispatch instant in-game CASSIE voice synthesis and screen broadcast notifications.
-- **Real-Time Log Streaming**: Streams live console logs filtered through LabAPI `ServerEvents.CommandExecuted` and log dispatchers with main-thread safety.
-
-### LabAPI Plugin and Dependency Management
-Inspect and manage your server modification ecosystem:
-
-![LabAPI Plugin Manager](docs/img/plugin-manager.png)
-
-- **Remote Plugin Inspection**: View installed LabAPI plugins, version strings, dependencies, and operational load status directly from the web panel.
-- **Owner-Exclusive Governance**: Binary uploads and downloads are strictly restricted to verified server owners to safeguard game host environments.
-
-### Granular Role-Based Access Control
-Safely delegate operational authority to community staff:
-- **Multi-Tenant Team Sharing**: Server owners can invite moderators and administrators via Discord ID.
-- **Fine-Grained Permissions**: Restrict permissions per staff member (console execution, kicking, banning, muting, broadcasting, config editing).
-- **Credential Protection**: Staff manage the server through their own Discord accounts without ever exposing raw server connection tokens.
+### 🚀 Sıfır Port Açma & Zahmetsiz Kurulum (Zero Port Forwarding)
+- **Modem, Güvenlik Duvarı veya Statik IP Derdi Yok**: Eklenti, oyun sunucunuzdan merkezi panele güvenli bir ters WebSocket tüneli (`wss://scpslwebpanel.zapto.org/ws/plugin`) açar.
+- **NAT & Dinamik IP Dostu**: Sunucunuz ister ev bilgisayarınızda ister kurumsal bir VDS üzerinde olsun; hiçbir port açmadan, Linux daemon veya tmux konfigürasyonlarıyla uğraşmadan tek tıkla bağlanır.
+- **Otomatik Yeniden Bağlanma**: İnternet kesintilerinde oyun sunucusunu yormayan akıllı üstel geri çekilme (exponential backoff) algoritmasıyla otomatik olarak tekrar hatta girer.
 
 ---
 
-## Installation & Setup Guide
+### 💻 Canlı Oyun Konsolu, Log Akışı & CASSIE Anonsları
+Web tarayıcınız üzerinden doğrudan oyun sunucunuzun canlı terminalini yönetin:
 
-### Prerequisites
-- An **SCP: Secret Laboratory Dedicated Server** (Windows or Linux).
-- **LabAPI** (v1.0.0+) installed on your server.
+![Canlı Terminal ve Konsol Akışı](docs/img/terminal.png)
 
-### Step 1: Download & Place the Plugin DLL
-1. Download `ScpWebPanelPlugin.dll` from the latest GitHub Release or your Central Web Panel dashboard.
-2. Place the file into your game server's global plugin directory:
+- **Çift Yönlü Canlı Terminal**: Uzaktan komut gönderin, oyun motoru ve Remote Admin (RA) yanıtlarını milisaniyelik gecikmeyle anında görüntüleyin.
+- **CASSIE Sesli Anons & Ekran Bildirimi**: Tesis içine doğrudan CASSIE sesli anonsları (`cassie`) veya oyuncuların ekranına anlık uyarı bildirimleri (`bc`) yollayın.
+- **Hızlı Komut & Kısayollar**: Tek tıkla konfigürasyon yenileme (`reload config`), eklenti yenileme ve güvenli sunucu yeniden başlatma kontrolleri.
+
+---
+
+### 🔍 Teaming & Hile Tespiti (Steam İstihbarat Grafiği)
+Kural ihlali yapanları ve oyun içi adaleti bozan gizli ekipleri anında yakalayın:
+- **Karşılıklı Arkadaşlık Kümesi Analizi**: Aktif oyuncular arasındaki Steam arkadaşlık bağlarını graf teorisi (connected components) ile analiz ederek aynı sunucuda gizlice takım oluşturanları (Cross-Teaming) renk kodlu olarak tespit eder.
+- **Steam Profil ve Saat Doğrulaması**: Oyuncuların toplam SCP:SL oynama saatlerini ve gizli profil durumlarını tarayıcı tabanlı analizle listeler.
+- **Geçmiş Oyuncular Hafızası**: Sunucudan ayrılan (alt+f4 çeken veya kaçan) kural ihlalcilerini dahi sonradan kolayca cezalandırabilmeniz için yakın zamanda çıkan oyuncuları hafızada tutar.
+
+---
+
+### 🛡️ Görsel Envanter & Oyuncu Yönetimi
+Oyuncularınızı salt metin komutlarla değil, sezgisel bir arayüzle denetleyin:
+- **Görsel Envanter Yönetimi**: Oyuncuların envanterindeki eşyaları modern WebP ikonlarıyla inceleyin; tek tıkla eşya verin, silin veya can/rol değerlerini düzenleyin.
+- **Hızlı Moderasyon Araçları**: Tek tıkla Kick, önceden tanımlı hazır süre butonlarıyla (10dk, 1sa, 1gün, 7gün, 30gün) Geçici Ban veya onay pencereli Kalıcı Ban uygulayın.
+- **Canlı Geri Sayımlı Ses Susturma (Mute)**: Sesli sohbet cezalarını gerçek zamanlı kalan süre sayacıyla takip edin; süre bittiğinde otomatik kalkan kalıcı müteleri yönetin.
+- **Oyun İçi F1 Rapor Masası**: Oyuncuların oyun içinden gönderdiği şikayetleri anında inceleyin, gerekçeleri okuyun ve doğrudan şikayet üzerinden işlem yapın.
+
+---
+
+### 🧩 LabAPI Eklenti & Konfigürasyon Yöneticisi
+Sunucunuzdaki eklenti ekosistemini doğrudan panelden denetleyin:
+
+![LabAPI Eklenti Yöneticisi](docs/img/pluginmanager.png)
+
+- **Kurulu Eklentileri Görüntüleme**: Sunucuda yüklü LabAPI eklentilerini, sürüm numaralarını ve çalışma durumlarını listeler.
+- **Web Tabanlı Konfigürasyon Düzenleme**: Sunucu dosyalarını açmadan eklenti `config.yml` ayarlarını doğrudan tarayıcıdan düzenleyin ve oyun içine uygulayın.
+- **Sunucu Sahibi Güvenliği**: Ham DLL ve binary işlemleri yalnızca doğrulanmış sunucu sahibine özel izinlerle korunur.
+
+---
+
+## 🛠️ Hızlı Kurulum Rehberi (Quick Setup)
+
+Sunucunuzu merkezi panele bağlamak yalnızca 2 dakikanızı alır:
+
+```
+[1. Panele Giriş Yap] ➔ [2. Sunucu Ekle & Token Al] ➔ [3. DLL'i Eklentilere At] ➔ [4. config.yml'e Yapıştır] ➔ [5. Canlı Panel Aktif]
+```
+
+### 1. Eklenti DLL'ini İndirin
+1. Bu depodaki [Releases](https://github.com/0MHS/SCPSL-Central-Web-Panel-Plugin/releases) sayfasından veya depodan `ScpWebPanelPlugin.dll` dosyasını indirin.
+2. Dosyayı sunucunuzun global eklenti dizinine yerleştirin:
    - **Linux**: `/home/<user>/.config/SCP Secret Laboratory/LabAPI/plugins/global/ScpWebPanelPlugin.dll`
    - **Windows**: `%appdata%\SCP Secret Laboratory\LabAPI\plugins\global\ScpWebPanelPlugin.dll`
 
-### Step 2: Register on the Central Web Panel
-1. Open [https://scpslwebpanel.zapto.org](https://scpslwebpanel.zapto.org) in your browser.
-2. Sign in with your **Discord account**.
-3. Under the server management dropdown, click **Add Server** (or use your default assigned server).
-4. Copy your unique **Server Connection Token** (`scp_...`).
+### 2. Panelden Token Oluşturun
+1. [https://scpslwebpanel.zapto.org](https://scpslwebpanel.zapto.org) adresine gidin ve **Discord ile Giriş Yapın**.
+2. **"Yeni Sunucu Bağla"** (Connect Server) butonuna tıklayın, sunucunuza bir isim verin ve oluşturulan **Server Token**'ı kopyalayın.
 
-### Step 3: Configure `config.yml`
-Open your server port configuration file:
+### 3. `config.yml` Dosyasını Ayarlayın
+Sunucu portunuza ait konfigürasyon dosyasını açın:
 - **Linux**: `/home/<user>/.config/SCP Secret Laboratory/LabAPI/configs/<port>/WebPanelPlugin/config.yml`
 - **Windows**: `%appdata%\SCP Secret Laboratory\LabAPI\configs\<port>\WebPanelPlugin\config.yml`
 
-*(If the file does not exist yet, you can create it or start the server once so LabAPI generates the template).*
-
-Paste your configuration:
+Aşağıdaki şablonu kopyalayıp token bilginizi yapıştırın:
 ```yaml
 web_panel_plugin:
   is_enabled: true
   central_ws_url: "wss://scpslwebpanel.zapto.org/ws/plugin"
-  server_token: "YOUR_SERVER_TOKEN_HERE"
-  server_name: "My Awesome SCP:SL Server"
+  server_token: "YOUR_UNIQUE_SERVER_TOKEN"
+  server_name: "EU Chaos #1"
   reconnect_interval_seconds: 5
   max_reconnect_interval_seconds: 60
   stream_console_logs: true
@@ -119,23 +102,31 @@ web_panel_plugin:
   report_in_game_reports: true
 ```
 
-### Step 4: Start or Reload Your Server
-Restart your game server or run `config reload` in your server console.
-Once connected, you will see the following line in your server console:
+### 4. Sunucuyu Başlatın veya Yenileyin
+Sunucunuzu başlatın veya sunucu konsolunda `reload plugins` / `reload config` komutunu çalıştırın.
+Sunucu konsolunda başarı mesajını göreceksiniz:
 ```text
 [INFO] [ScpWebPanelPlugin] [PluginWS] Connected successfully! Sending authentication handshake...
 ```
-In your browser on [https://scpslwebpanel.zapto.org](https://scpslwebpanel.zapto.org), your server status indicator will switch to green (**ONLINE / TUNNEL ACTIVE**), and live player rosters, console logs, and moderation controls will become active immediately!
+Web panelinde sunucu göstergeniz anında **TUNNEL ACTIVE (Yeşil)** durumuna geçecektir!
 
 ---
 
-## Security & Privacy
-- **Encrypted Transmission**: All communication between your game server and the central panel is encrypted via TLS 1.3 / WSS.
-- **Tenancy Isolation**: Each game server is strictly bound to its owner's Discord account and delegated staff.
-- **Binary Integrity**: Built with strict argument sanitization protecting `UserIdBans.txt` and preventing remote command injection.
+## 🔒 Güvenlik, Gizlilik ve İzin Ayrımı (Security Architecture)
+
+- **Uçtan Uca TLS 1.3 Şifreleme**: Oyun sunucunuz ile merkezi panel arasındaki tüm veri trafiği güvenli WebSocket (`wss://`) ve HTTPS protokolleriyle korunur.
+- **Discord Tabanlı Rol & İzin Ayrımı (RBAC)**: Sunucu sahipleri, `ServerToken` bilgisini asla başkalarıyla paylaşmadan moderatörlerine Discord kullanıcı kimlikleri üzerinden özel yetkiler (konsol izleme, ban atma, susturma vb.) tanımlayabilir.
+- **Sıfır Şifre Depolama**: Sistem hiçbir kullanıcının şifresini veya hassas kimlik bilgisini barındırmaz; Discord OAuth2 `identify` mekanizmasını kullanır.
 
 ---
 
-## Support & Inquiries
-- **Central Web Panel**: [https://scpslwebpanel.zapto.org](https://scpslwebpanel.zapto.org)
-- For issues, feature requests, or bug reports, please open an issue on this repository.
+## ⚖️ Yasal Bildirimler & Lisans
+
+- **Lisans**: Bu proje açık kaynaklı olup [MIT License](LICENSE) şartları altında lisanslanmıştır.
+- **Northwood Studios Feragatnamesi**: Bu yazılım tamamen bağımsız bir topluluk projesidir. Northwood Studios ile hiçbir resmi bağı, sponsorluğu veya ortaklığı bulunmamaktadır. *SCP: Secret Laboratory*, Northwood Studios'un tescilli markasıdır.
+- **SCP Evreni & Lisans**: SCP Foundation temaları ve kurgusu [Creative Commons Attribution-ShareAlike 3.0 (CC BY-SA 3.0)](https://creativecommons.org/licenses/by-sa/3.0/) lisansına tabidir.
+
+---
+
+## 🌐 Canlı Web Panel
+Web paneline doğrudan erişmek için: **[https://scpslwebpanel.zapto.org](https://scpslwebpanel.zapto.org)**
