@@ -17,16 +17,16 @@ Connect any dedicated game server to the central cloud panel ([https://scpslwebp
 
 ---
 
-## ⚡ Key Highlights & Server Owner Benefits
+## Key Highlights & Server Owner Benefits
 
-### 🚀 Zero Port Forwarding & Effortless Setup
+### Zero Port Forwarding & Effortless Setup
 - **No Modem, Firewall, or Static IP Configuration**: The plugin opens an outbound secure TLS Reverse WebSocket tunnel (`wss://scpslwebpanel.zapto.org/ws/plugin`) directly to the central panel.
 - **NAT & Dynamic IP Friendly**: Whether your server is hosted on a local PC or an enterprise VDS, it connects instantly with zero port forwarding, zero Linux daemon tinkering, and zero tmux dependencies.
 - **Automatic Exponential Reconnection**: Silent background reconnection (`5s -> 10s -> 20s...`) ensures continuous panel availability without degrading server performance during network interruptions.
 
 ---
 
-### 💻 Real-Time Game Console, Log Streaming & CASSIE Broadcasts
+### Real-Time Game Console, Log Streaming & CASSIE Broadcasts
 Manage your game server's live terminal directly through any modern web browser:
 
 ![Live Terminal and Console Stream](docs/img/terminal.png)
@@ -37,7 +37,7 @@ Manage your game server's live terminal directly through any modern web browser:
 
 ---
 
-### 🔍 Teaming & Collusion Detection (Steam Social Graph)
+### Teaming & Collusion Detection (Steam Social Graph)
 Identify rule violations and unfair alliances automatically:
 - **Mutual Friend Cluster Analysis**: Analyzes active players' Steam friendship connections using graph connected components to detect and color-code illicit alliances (cross-teaming) in real time.
 - **Steam Profile & Playtime Intelligence**: Automatically inspects total SCP:SL hours on record and flags private profiles using browser-level resolution.
@@ -45,7 +45,7 @@ Identify rule violations and unfair alliances automatically:
 
 ---
 
-### 🛡️ Visual Inventory & Real-Time Player Management
+### Visual Inventory & Real-Time Player Management
 Inspect and moderate active players with an intuitive graphical interface:
 - **Visual Inventory Management**: View player equipment rendered with lightweight modern WebP item sprites; give, remove, or modify items, health, and role assignments with single-click actions.
 - **Rapid Enforcement Suite**: Execute immediate kicks, customizable temporary bans with quick duration chips (10m, 1h, 1d, 7d, 30d), or permanent bans with destructive confirmation dialogs.
@@ -54,7 +54,7 @@ Inspect and moderate active players with an intuitive graphical interface:
 
 ---
 
-### 🧩 LabAPI Plugin & Configuration Manager
+### LabAPI Plugin & Configuration Manager
 Inspect and maintain your server modification environment from the cloud:
 
 ![LabAPI Plugin Manager](docs/img/pluginmanager.png)
@@ -65,12 +65,12 @@ Inspect and maintain your server modification environment from the cloud:
 
 ---
 
-## 🛠️ Quick Installation Guide
+## Quick Installation Guide
 
 Connecting your dedicated server takes less than 2 minutes:
 
 ```
-[1. Sign In] ➔ [2. Connect Server & Get Token] ➔ [3. Drop DLL into Plugins] ➔ [4. Paste config.yml] ➔ [5. Live Tunnel Active]
+[1. Sign In] -> [2. Connect Server & Get Token] -> [3. Drop DLL into Plugins] -> [4. Paste config.yml] -> [5. Live Tunnel Active]
 ```
 
 ### 1. Download the Plugin Binary
@@ -114,7 +114,7 @@ In your browser on [https://scpslwebpanel.zapto.org](https://scpslwebpanel.zapto
 
 ---
 
-## 🔒 Security Architecture & Access Control
+## Security Architecture & Access Control
 
 - **End-to-End TLS 1.3 Encryption**: All communication between game servers and the central panel is secured over TLS 1.3 / WSS protocols.
 - **Discord Role-Based Access Control (RBAC)**: Server owners can delegate granular moderation permissions (console access, kicking, banning, muting) to staff by Discord ID without ever sharing the server's `ServerToken`.
@@ -122,7 +122,7 @@ In your browser on [https://scpslwebpanel.zapto.org](https://scpslwebpanel.zapto
 
 ---
 
-## ⚖️ Legal Disclaimers & Licensing
+## Legal Disclaimers & Licensing
 
 - **License**: This project is open-source software licensed under the [MIT License](LICENSE).
 - **Northwood Studios Notice**: This project is an independent community development and is **NOT affiliated with, endorsed by, or sponsored by Northwood Studios**. *SCP: Secret Laboratory* is a registered trademark of Northwood Studios.
@@ -130,5 +130,5 @@ In your browser on [https://scpslwebpanel.zapto.org](https://scpslwebpanel.zapto
 
 ---
 
-## 🌐 Official Web Panel
+## Official Web Panel
 Access the live central web panel at: **[https://scpslwebpanel.zapto.org](https://scpslwebpanel.zapto.org)**
