@@ -71,6 +71,7 @@ namespace ScpWebPanelPlugin
                 _ws?.Dispose();
                 _ws = null;
 
+                while (_queueSignal.CurrentCount > 0 && _queueSignal.Wait(0)) { }
                 while (_priorityQueue.TryDequeue(out _)) { }
                 while (_logQueue.TryDequeue(out _)) { }
                 while (_pendingLogs.TryDequeue(out _)) { }
@@ -150,7 +151,7 @@ namespace ScpWebPanelPlugin
             string serverName = EscapeJson(string.IsNullOrWhiteSpace(_config.ServerName) ? $"Server #{Server.Port}" : _config.ServerName);
             int port = Server.Port;
 
-                string currentVer = "2.2.3";
+                string currentVer = "2.2.4";
                 try
                 {
                     if (WebPanelPlugin.Instance != null && WebPanelPlugin.Instance.Version != null)
@@ -199,7 +200,7 @@ namespace ScpWebPanelPlugin
                 else
                 {
                     // Multi-frame fallback for large payloads (e.g. plugin DLL uploads)
-                    const int MaxMessageBytes = 15 * 1024 * 1024; // 15 MB safety cap
+                    const int MaxMessageBytes = 60 * 1024 * 1024; // 60 MB safety cap for large plugin binaries
                     using (var ms = new MemoryStream())
                     {
                         ms.Write(buffer, 0, result.Count);
@@ -448,6 +449,95 @@ namespace ScpWebPanelPlugin
                         await SendResponseAsync(reqId, ok, "{\"success\":true}", isRawJson: true);
                         break;
                     }
+
+                    case "unban":
+                    {
+                        string targetId = SanitizeTargetId(ExtractField(rawMessage, "targetId"));
+                        if (string.IsNullOrEmpty(targetId)) targetId = SanitizeTargetId(ExtractField(rawMessage, "id"));
+
+                        if (string.IsNullOrEmpty(targetId))
+                        {
+                            await SendResponseAsync(reqId, false, "\"Target ID is required\"");
+                            return;
+                        }
+
+                        string formattedTargetId = targetId;
+                        if (!formattedTargetId.Contains("@") && formattedTargetId.All(char.IsDigit) && formattedTargetId.Length >= 17)
+                        {
+                            formattedTargetId += "@steam";
+                        }
+
+                        bool ok = await RunOnMainThreadAsync(() =>
+                        {
+                            try
+                            {
+                                ServerConsole.EnterCommand($"unban {formattedTargetId}");
+                                if (formattedTargetId != targetId)
+                                {
+                                    ServerConsole.EnterCommand($"unban {targetId}");
+                                }
+                                return true;
+                            }
+                            catch (Exception ubEx)
+                            {
+                                Logger.Warn($"[PluginWS] ServerConsole unban command failed: {ubEx.Message}");
+                                return false;
+                            }
+                        });
+
+                        // Synchronize UserIdBans.txt in background to maintain file consistency
+                        _ = Task.Run(() =>
+                        {
+                            try
+                            {
+                                string bansPath = ResolveConfigFilePath("UserIdBans.txt");
+                                if (!string.IsNullOrEmpty(bansPath) && File.Exists(bansPath))
+                                {
+                                    lock (_fileLock)
+                                    {
+                                        string[] lines = File.ReadAllLines(bansPath);
+                                        var kept = new List<string>(lines.Length);
+                                        bool removed = false;
+                                        foreach (string line in lines)
+                                        {
+                                            string trimmed = line.Trim();
+                                            if (string.IsNullOrEmpty(trimmed) || trimmed.StartsWith("#"))
+                                            {
+                                                kept.Add(line);
+                                                continue;
+                                            }
+                                            string[] parts = trimmed.Split(';');
+                                            string p0 = parts.Length > 0 ? parts[0].Trim() : "";
+                                            string p1 = parts.Length > 1 ? parts[1].Trim() : "";
+                                            if (p0 == targetId || p0 == formattedTargetId || p1 == targetId || p1 == formattedTargetId)
+                                            {
+                                                removed = true;
+                                                continue;
+                                            }
+                                            kept.Add(line);
+                                        }
+                                        if (removed)
+                                        {
+                                            File.WriteAllLines(bansPath, kept);
+                                            _ = RunOnMainThreadAsync(() =>
+                                            {
+                                                try { ServerConsole.EnterCommand("reload config"); } catch { }
+                                                return true;
+                                            });
+                                        }
+                                    }
+                                }
+                            }
+                            catch (Exception ex)
+                            {
+                                Logger.Warn($"[PluginWS] Failed to clean UserIdBans.txt during unban: {ex.Message}");
+                            }
+                        });
+
+                        await SendResponseAsync(reqId, ok, ok ? "{\"success\":true}" : "{\"error\":\"Unban execution failed\"}", isRawJson: true);
+                        break;
+                    }
+
 
                     case "mute":
                     {

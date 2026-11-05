@@ -38,7 +38,7 @@ namespace ScpWebPanelPlugin
 
         public override string Author => "MHS";
 
-        public override Version Version => new Version(2, 2, 3);
+        public override Version Version => new Version(2, 2, 4);
 
         public override Version RequiredApiVersion => new Version(1, 0, 0);
 
@@ -60,7 +60,7 @@ namespace ScpWebPanelPlugin
 
                 Instance = this;
 
-                Logger.Info("WebPanelPlugin (v2.2.3 High-Performance SaaS Client) loading via LabAPI...");
+                Logger.Info("WebPanelPlugin (v2.2.4 High-Performance SaaS Client) loading via LabAPI...");
 
 
 
