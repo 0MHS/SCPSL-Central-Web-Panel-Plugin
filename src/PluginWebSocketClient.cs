@@ -150,7 +150,7 @@ namespace ScpWebPanelPlugin
             string serverName = EscapeJson(string.IsNullOrWhiteSpace(_config.ServerName) ? $"Server #{Server.Port}" : _config.ServerName);
             int port = Server.Port;
 
-                string currentVer = "2.2.2";
+                string currentVer = "2.2.3";
                 try
                 {
                     if (WebPanelPlugin.Instance != null && WebPanelPlugin.Instance.Version != null)

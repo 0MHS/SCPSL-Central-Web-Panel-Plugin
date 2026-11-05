@@ -38,7 +38,7 @@ namespace ScpWebPanelPlugin
 
         public override string Author => "MHS";
 
-        public override Version Version => new Version(2, 2, 2);
+        public override Version Version => new Version(2, 2, 3);
 
         public override Version RequiredApiVersion => new Version(1, 0, 0);
 
@@ -58,8 +58,9 @@ namespace ScpWebPanelPlugin
 
             {
 
-                Instance = this;
-                Logger.Info("WebPanelPlugin (v2.2.2 High-Performance SaaS Client) loading via LabAPI...");
+                Instance = this;
+
+                Logger.Info("WebPanelPlugin (v2.2.3 High-Performance SaaS Client) loading via LabAPI...");
 
 
 
@@ -204,67 +205,97 @@ namespace ScpWebPanelPlugin
 
 
         private void OnUnityLogMessage(string condition, string stackTrace, UnityEngine.LogType type)
-
         {
-
             try
-
             {
-
                 if (WsClient == null || !WsClient.IsConnected || !WsClient.IsConsoleSubscribed) return;
-
                 if (string.IsNullOrWhiteSpace(condition)) return;
 
+                // Fast pre-filter for benign Unity Dedicated Server stripping and engine noise
+                // Evaluated using Ordinal string checks before string allocations or enqueueing
+                if (IsBenignUnityEngineNoise(condition, stackTrace)) return;
 
-
-                // 1. Filter out internal Unity GUI, Audio, and scene noise that floods the console
-
-                if (condition.Contains("missing script") ||
-
-                    condition.Contains("ButtonAudio") ||
-
-                    condition.Contains("ValueButton") ||
-
-                    condition.Contains("OperationalGuide") ||
-
-                    condition.Contains("[T11]") ||
-
-                    condition.Contains("GUI") ||
-
-                    condition.Contains("AudioSource") ||
-
-                    condition.Contains("Canvas") ||
-
-                    condition.Contains("Font") ||
-
-                    condition.Contains("MeshRenderer") ||
-
-                    condition.Contains("The referenced script on this Behaviour"))
-
-                {
-
-                    return;
-
-                }
-
-
-
-                // 2. Format with timestamp and log type prefix if informative
-
+                // Format with log type prefix if informative
                 string prefix = type == UnityEngine.LogType.Error || type == UnityEngine.LogType.Exception ? "[ERROR] " :
-
                                type == UnityEngine.LogType.Warning ? "[WARN] " : "";
-
                 string formatted = $"{prefix}{condition}";
 
-
-
                 _ = WsClient.SendConsoleLogAsync(formatted);
+            }
+            catch { }
+        }
 
+        private static bool IsBenignUnityEngineNoise(string condition, string stackTrace)
+        {
+            if (string.IsNullOrEmpty(condition)) return true;
+
+            // 1. Stripped client-only MonoBehaviour scripts (e.g. Interactables.Highlightable, DecontaminationScreen, ButtonAudio, MEDKIT_MODEL, Blatant Asset Reuse)
+            if (condition.IndexOf("The referenced script on this Behaviour", StringComparison.Ordinal) >= 0 ||
+                condition.IndexOf("The referenced script (", StringComparison.Ordinal) >= 0 ||
+                condition.IndexOf("is missing!", StringComparison.Ordinal) >= 0 ||
+                condition.IndexOf("missing script", StringComparison.Ordinal) >= 0)
+            {
+                return true;
             }
 
-            catch { }
+            // 2. Serialization layout differences from stripped editor/client properties
+            if (condition.IndexOf("A scripted object (probably ", StringComparison.Ordinal) >= 0 ||
+                condition.IndexOf("has a different serialization layout when loading.", StringComparison.Ordinal) >= 0 ||
+                condition.IndexOf("Did you #if UNITY_EDITOR a section of your serialized properties", StringComparison.Ordinal) >= 0)
+            {
+                return true;
+            }
 
+            // 3. Stripped shaders on dedicated server builds
+            if (condition.IndexOf("Trying to access a shader but no shaders were included in the build because Dedicated Server Optimizations is enabled.", StringComparison.Ordinal) >= 0 ||
+                condition.IndexOf("Dedicated Server Optimizations is enabled", StringComparison.Ordinal) >= 0)
+            {
+                return true;
+            }
+
+            // 4. Mesh stripping on particle system renderers
+            if (condition.IndexOf("No mesh data available for mesh ", StringComparison.Ordinal) >= 0)
+            {
+                return true;
+            }
+
+            // 5. Stripped fonts, textures, and stripped IMGUI Monobehaviour warnings
+            if (condition.IndexOf("Unable to load font face for [", StringComparison.Ordinal) >= 0 ||
+                condition.IndexOf("No texture data is available to upload.", StringComparison.Ordinal) >= 0 ||
+                condition.IndexOf("OnGUI function detected on MonoBehaviour, but not called, because IMGUI module is stripped.", StringComparison.Ordinal) >= 0)
+            {
+                return true;
+            }
+
+            // 6. Missing translation fallbacks during startup
+            if (condition.IndexOf("Missing **FALLBACK** translation!", StringComparison.Ordinal) >= 0)
+            {
+                return true;
+            }
+
+            // 7. Unity asset GC and memory unloading logs
+            if (condition.StartsWith("Unloading ", StringComparison.Ordinal) ||
+                condition.IndexOf("FindLiveObjects:", StringComparison.Ordinal) >= 0 ||
+                condition.IndexOf("Unused Serialized files", StringComparison.Ordinal) >= 0 ||
+                condition.IndexOf("unused Assets to reduce memory usage", StringComparison.Ordinal) >= 0)
+            {
+                return true;
+            }
+
+            // 8. Normal soft restart TcpConsole disconnection exceptions
+            bool isTcpConsoleAbort = (!string.IsNullOrEmpty(stackTrace) && stackTrace.IndexOf("ServerOutput.TcpConsole.Receive", StringComparison.Ordinal) >= 0) ||
+                                     condition.IndexOf("ServerOutput.TcpConsole.Receive", StringComparison.Ordinal) >= 0;
+            if (isTcpConsoleAbort)
+            {
+                if (condition.IndexOf("Thread was being aborted", StringComparison.Ordinal) >= 0 ||
+                    condition.IndexOf("ThreadAbortException", StringComparison.Ordinal) >= 0 ||
+                    condition.IndexOf("Unable to read data from the transport connection", StringComparison.Ordinal) >= 0)
+                {
+                    return true;
+                }
+            }
+
+            return false;
         }
 
 

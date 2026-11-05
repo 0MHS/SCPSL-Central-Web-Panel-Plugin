@@ -1,6 +1,6 @@
-# SCP:SL Central Web Panel — LabAPI Game Server Plugin (v2.2.2)
+# SCP:SL Central Web Panel — LabAPI Game Server Plugin (v2.2.3)
 
-[![Release](https://img.shields.io/badge/Release-v2.2.2-brightgreen.svg)](https://github.com/0MHS/SCPSL-Central-Web-Panel-Plugin/releases)
+[![Release](https://img.shields.io/badge/Release-v2.2.3-brightgreen.svg)](https://github.com/0MHS/SCPSL-Central-Web-Panel-Plugin/releases)
 [![Target](https://img.shields.io/badge/.NET%20Framework-4.8-blue.svg)](https://dotnet.microsoft.com/)
 [![Modding](https://img.shields.io/badge/Framework-LabAPI-orange.svg)](https://github.com/CedModV2/LabAPI)
 [![Status](https://img.shields.io/badge/Live%20Panel-Online-success.svg)](https://scpslwebpanel.zapto.org)
